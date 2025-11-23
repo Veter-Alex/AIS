@@ -20,3 +20,13 @@ CREATE TABLE IF NOT EXISTS vessels (
     updated_at TIMESTAMP,
     vessel_key VARCHAR(32) UNIQUE
 );
+
+-- Таблица для хранения состояния скрапера
+CREATE TABLE IF NOT EXISTS scraper_state (
+    id SERIAL PRIMARY KEY,
+    mode VARCHAR(20) NOT NULL,
+    last_page INTEGER NOT NULL DEFAULT 1,
+    vessels_count INTEGER NOT NULL DEFAULT 0,
+    last_run_at TIMESTAMP NOT NULL DEFAULT NOW(),
+    UNIQUE(mode)
+);
