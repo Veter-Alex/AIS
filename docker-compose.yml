@@ -1,0 +1,40 @@
+services:
+  db:
+    image: postgres:15
+    restart: always
+    environment:
+      POSTGRES_DB: vessels_db
+      POSTGRES_USER: user
+      POSTGRES_PASSWORD: password
+    ports:
+      - "5432:5432"
+    volumes:
+      - ./data/postgres:/var/lib/postgresql/data
+      - ./init.sql:/docker-entrypoint-initdb.d/init.sql
+  vessel_api:
+    build: ./vessel_api
+    depends_on:
+      - db
+    environment:
+      POSTGRES_DB: vessels_db
+      POSTGRES_USER: user
+      POSTGRES_PASSWORD: password
+      POSTGRES_HOST: db
+      POSTGRES_PORT: 5432
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./data/vessel_images:/app/images:ro
+  vesselfinder_scraper:
+    build: ./vesselfinder_scraper
+    depends_on:
+      - db
+    environment:
+      POSTGRES_DB: vessels_db
+      POSTGRES_USER: user
+      POSTGRES_PASSWORD: password
+      POSTGRES_HOST: db
+      POSTGRES_PORT: 5432
+      IMAGE_DIR: /app/images
+    volumes:
+      - ./data/vessel_images:/app/images
