@@ -1,17 +1,20 @@
-import React from 'react';
-import { vesselApi } from '../api/vesselApi';
-import type { VesselFilters } from '../types/vessel';
+import React from "react";
+import { vesselApi } from "../api/vesselApi";
+import type { VesselFilters } from "../types/vessel";
 
 interface ExportButtonProps {
   filters: VesselFilters;
 }
 
+// Кнопка экспорта текущей выборки судов.
+// Экспорт всегда учитывает активные фильтры, переданные из родительского экрана.
 const ExportButton: React.FC<ExportButtonProps> = ({ filters }) => {
   const [isOpen, setIsOpen] = React.useState(false);
 
-  const handleExport = (format: 'csv' | 'json') => {
+  // Для экспорта используем отдельную вкладку, чтобы не прерывать текущую работу в UI.
+  const handleExport = (format: "csv" | "json") => {
     const url = vesselApi.exportVessels(format, filters);
-    window.open(url, '_blank');
+    window.open(url, "_blank");
     setIsOpen(false);
   };
 
@@ -32,13 +35,13 @@ const ExportButton: React.FC<ExportButtonProps> = ({ filters }) => {
           />
           <div className="absolute right-0 mt-2 w-48 bg-dark-card border border-dark-border rounded-lg shadow-lg z-20">
             <button
-              onClick={() => handleExport('csv')}
+              onClick={() => handleExport("csv")}
               className="w-full px-4 py-2 text-left text-gray-300 hover:bg-dark-hover transition-colors rounded-t-lg"
             >
               Экспорт в CSV
             </button>
             <button
-              onClick={() => handleExport('json')}
+              onClick={() => handleExport("json")}
               className="w-full px-4 py-2 text-left text-gray-300 hover:bg-dark-hover transition-colors rounded-b-lg"
             >
               Экспорт в JSON

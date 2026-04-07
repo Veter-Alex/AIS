@@ -1,54 +1,182 @@
 services:
+  # База данных PostgreSQL (персистентная)
   db:
-    image: postgres:15
-    restart: always
-    env_file: .env
+    image: pgvector/pgvector:pg15  # PostgreSQL 15 с предустановленным расширением pgvector
+    restart: always     # Автоматически перезапускать контейнер при падении/рестарте Docker
+    env_file: .env      # Загружать ENV-переменные из файла .env (используется ниже)
     environment:
+      # Название БД, пользователь и пароль — берутся из .env
       POSTGRES_DB: ${POSTGRES_DB}
       POSTGRES_USER: ${POSTGRES_USER}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      # Хост и порт для удобства проброса в другие сервисы
       POSTGRES_HOST: ${POSTGRES_HOST}
       POSTGRES_PORT: ${POSTGRES_PORT}
     ports:
-      - "5432:5432"
+      - "5432:5432"   # Публикуем порт Postgres на хосте для локальных подключений
     volumes:
-      - ./data/postgres:/var/lib/postgresql/data
-      - ./init.sql:/docker-entrypoint-initdb.d/init.sql
+      - ./data/postgres:/var/lib/postgresql/data  # Персистентные данные БД на хосте
+      - ./init.sql:/docker-entrypoint-initdb.d/init.sql  # Автоинициализация схемы на чистой БД
+    healthcheck:
+      # Проверка готовности БД: ждём пока pg_isready вернёт успешный статус
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 5s    # Частота проверки
+      timeout: 5s     # Таймаут выполнения команды проверки
+      retries: 5      # Количество попыток до признания контейнера нездоровым
+
+  # Backend API для работы с данными судов (читает из БД и отдаёт фронтенду)
   vessel_api:
-    build: ./vessel_api
+    build: ./vessel_api  # Сборка образа из Dockerfile в папке vessel_api
     depends_on:
-      - db
+      - db               # API стартует после старта БД (но без проверки health)
     env_file: .env
     environment:
+      # Настройки подключения к БД — совпадают с параметрами у db
       POSTGRES_DB: ${POSTGRES_DB}
       POSTGRES_USER: ${POSTGRES_USER}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
       POSTGRES_HOST: ${POSTGRES_HOST}
       POSTGRES_PORT: ${POSTGRES_PORT}
     ports:
-      - "8000:8000"
+      - "8000:8000"   # Публикуем API на http://localhost:8000
     volumes:
-      - ./data/vessel_images:/app/images:ro
-  vesselfinder_scraper:
-    build: ./vesselfinder_scraper
+      - ./data/vessel_images:/app/images:ro  # Каталог с изображениями (только чтение для API)
+
+  # Скрапер VesselFinder (Selenium + Chromium), пишет данные и фото
+  # vesselfinder_scraper:
+  #   build: ./AIS_scrapers/vesselfinder
+  #   depends_on:
+  #     db:
+  #       condition: service_healthy  # Запускать только когда БД перешла в состояние Healthy
+  #   env_file: .env
+  #   environment:
+  #     # Подключение к БД
+  #     POSTGRES_DB: ${POSTGRES_DB}
+  #     POSTGRES_USER: ${POSTGRES_USER}
+  #     POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+  #     POSTGRES_HOST: ${POSTGRES_HOST}
+  #     POSTGRES_PORT: ${POSTGRES_PORT}
+  #     # Директория для сохранения изображений внутри контейнера
+  #     IMAGE_DIR: ${IMAGE_DIR}
+  #     # Режим работы скрапера: test|full
+  #     SCRAPER_MODE: "full"
+  #   volumes:
+  #     - ./data/vessel_images:/app/images  # Общая папка изображений, доступна для записи
+
+  # Скрапер Maritime Database, пишет данные и фото
+  # maritime_scraper:
+  #   build: ./AIS_scrapers/maritime_database
+  #   depends_on:
+  #     db:
+  #       condition: service_healthy  # Запускать только когда БД перешла в состояние Healthy
+  #   env_file: .env
+  #   environment:
+  #     # Подключение к БД
+  #     POSTGRES_DB: ${POSTGRES_DB}
+  #     POSTGRES_USER: ${POSTGRES_USER}
+  #     POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+  #     POSTGRES_HOST: ${POSTGRES_HOST}
+  #     POSTGRES_PORT: ${POSTGRES_PORT}
+  #     # Режим работы скрапера: test|full
+  #     SCRAPER_MODE: "full"
+  #   volumes:
+  #     - type: bind
+  #       source: ./data/vessel_images   # Папка изображений на хосте
+  #       target: /app/images            # Точка монтирования внутри контейнера
+  #       bind:
+  #         create_host_path: true       # Создать папку на хосте, если её нет
+
+  # Скрапер MyShipTracking, пишет данные о судах
+  myshiptracking_scraper:
+    build: ./AIS_scrapers/myshiptracking
+    profiles:
+      - scrapers
     depends_on:
-      - db
+      db:
+        condition: service_healthy  # Запускать только когда БД перешла в состояние Healthy
     env_file: .env
     environment:
+      # Подключение к БД
       POSTGRES_DB: ${POSTGRES_DB}
       POSTGRES_USER: ${POSTGRES_USER}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
       POSTGRES_HOST: ${POSTGRES_HOST}
       POSTGRES_PORT: ${POSTGRES_PORT}
-      IMAGE_DIR: ${IMAGE_DIR}
+      # Режим работы скрапера: test|full
+      SCRAPER_MODE: "full"
     volumes:
-      - ./data/vessel_images:/app/images
+      - type: bind
+        source: ./data/vessel_images   # Папка изображений на хосте
+        target: /app/images            # Точка монтирования внутри контейнера
+        bind:
+          create_host_path: true       # Создать папку на хосте, если её нет
+
+  # Скрапер MarineTraffic, пишет данные о судах (приоритет 1)
+  marinetraffic_scraper:
+    build: ./AIS_scrapers/marinetraffic
+    profiles:
+      - scrapers
+    depends_on:
+      db:
+        condition: service_healthy  # Запускать только когда БД перешла в состояние Healthy
+    env_file: .env
+    environment:
+      # Подключение к БД
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_HOST: ${POSTGRES_HOST}
+      POSTGRES_PORT: ${POSTGRES_PORT}
+      # Режим работы скрапера: test|full
+      SCRAPER_MODE: "full"
+    volumes:
+      - type: bind
+        source: ./data/vessel_images   # Папка изображений на хосте
+        target: /app/images            # Точка монтирования внутри контейнера
+        bind:
+          create_host_path: true       # Создать папку на хосте, если её нет
+
+  # Фронтенд (Nginx + статический сайт), обращается к API
   vessel_frontend:
     build: ./vessel_frontend
     depends_on:
-      - vessel_api
+      - vessel_api         # Фронтенд стартует после API
     env_file: .env
     ports:
-      - "3000:80"
+      - "3000:80"        # Публикуем фронтенд на http://localhost:3000
     environment:
+      # Базовый URL API для фронтенда (используется Vite/Tailwind сборкой)
       VITE_API_URL: ${VITE_API_URL}
+
+  # AI Agent
+  ai_agent:
+    build: ./ai_agent
+    depends_on:
+      - db
+      - ollama
+    env_file: .env
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_HOST: ${POSTGRES_HOST}
+      POSTGRES_PORT: ${POSTGRES_PORT}
+      EMBEDDING_PROVIDER: fastembed
+      EMBEDDING_MODEL: BAAI/bge-small-en-v1.5
+      LLM_PROVIDER: ollama
+      LLM_MODEL: llama3.2:3b
+      OLLAMA_BASE_URL: http://ollama:11434
+    ports:
+      - "8100:8100"
+
+  # Локальный LLM runtime.
+  ollama:
+    image: ollama/ollama:latest
+    restart: always
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama_data:/root/.ollama
+
+volumes:
+  ollama_data:

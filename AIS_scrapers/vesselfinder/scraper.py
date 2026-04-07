@@ -1,3 +1,18 @@
+"""
+Скрапер VesselFinder.
+
+Описание:
+- Собирает список судов и детальные страницы с характеристиками.
+- Использует Selenium для устойчивой работы с динамическим DOM.
+- Сохраняет результаты в PostgreSQL с upsert-логикой и учётом источника.
+- Поддерживает возобновление через таблицу состояния `scraper_state`.
+
+Стиль:
+- Комментарии и docstring на русском языке;
+- поясняем архитектурные решения (паузы, ретраи, state), а не очевидный синтаксис.
+"""
+
+import io
 import logging
 import os
 import random
@@ -7,7 +22,9 @@ from datetime import datetime
 
 import config
 import psycopg2
+import requests
 from bs4 import BeautifulSoup
+from PIL import Image
 from selenium import webdriver
 from selenium.common.exceptions import TimeoutException, WebDriverException
 from selenium.webdriver.chrome.options import Options
@@ -19,6 +36,18 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(mess
 
 
 def get_db_conn():
+    """Создать подключение к PostgreSQL.
+
+    Параметры:
+    - отсутствуют (используются ENV/`config.py`).
+
+    Возвращает:
+    - объект соединения `psycopg2.connect`.
+
+    Побочные эффекты:
+    - открывает новое соединение, которое обязан закрыть вызывающий код.
+    """
+    # Подключение к БД берётся из ENV (Docker) с fallback на локальный config.
     return psycopg2.connect(
         dbname=os.getenv("POSTGRES_DB", config.DB_NAME),
         user=os.getenv("POSTGRES_USER", config.DB_USER),
@@ -29,13 +58,21 @@ def get_db_conn():
 
 
 def get_scraper_state(mode):
-    """Получить состояние скрапера для заданного режима"""
+    """Получить сохраненное состояние скрапера для заданного режима.
+
+    Параметры:
+    - mode: строка режима (`test` или `full`).
+
+    Возвращает:
+    - кортеж `(last_page, vessels_count)`;
+    - `(1, 0)`, если состояние для режима отсутствует.
+    """
     conn = get_db_conn()
     cur = conn.cursor()
     try:
         cur.execute(
-            "SELECT last_page, vessels_count FROM scraper_state WHERE mode = %s",
-            (mode,),
+            "SELECT last_page, vessels_count FROM scraper_state WHERE scraper_name = %s AND mode = %s",
+            ("vesselfinder", mode),
         )
         result = cur.fetchone()
         if result:
@@ -52,20 +89,29 @@ def get_scraper_state(mode):
 
 
 def save_scraper_state(mode, last_page, vessels_count):
-    """Сохранить состояние скрапера"""
+    """Сохранить текущее состояние скрапера в таблицу `scraper_state`.
+
+    Параметры:
+    - mode: активный режим запуска;
+    - last_page: следующая/последняя обработанная страница;
+    - vessels_count: общее число обработанных судов.
+
+    Побочные эффекты:
+    - выполняет upsert и commit в БД.
+    """
     conn = get_db_conn()
     cur = conn.cursor()
     try:
         cur.execute(
             """
-            INSERT INTO scraper_state (mode, last_page, vessels_count, last_run_at)
-            VALUES (%s, %s, %s, NOW())
-            ON CONFLICT (mode) DO UPDATE SET
+            INSERT INTO scraper_state (scraper_name, mode, last_page, vessels_count, last_run_at)
+            VALUES (%s, %s, %s, %s, NOW())
+            ON CONFLICT (scraper_name, mode) DO UPDATE SET
                 last_page = EXCLUDED.last_page,
                 vessels_count = EXCLUDED.vessels_count,
                 last_run_at = EXCLUDED.last_run_at
             """,
-            (mode, last_page, vessels_count),
+            ("vesselfinder", mode, last_page, vessels_count),
         )
         conn.commit()
         logging.info(
@@ -77,67 +123,106 @@ def save_scraper_state(mode, last_page, vessels_count):
 
 
 def download_image(photo_url, vessel_key):
-    import requests
+    """Скачать изображение судна, сжать и сохранить.
 
+    Параметры:
+    - photo_url: URL изображения.
+    - vessel_key: ключ для имени файла (обычно MMSI).
+
+    Возвращает:
+    - Путь к сохранённому файлу или None в случае ошибки.
+    """
     if not photo_url or not vessel_key:
         return None
+
     image_dir = os.getenv("IMAGE_DIR", "/app/images")
     os.makedirs(image_dir, exist_ok=True)
-    ext = ".jpg"
-    if photo_url.lower().endswith(".png"):
-        ext = ".png"
-    file_name = f"{vessel_key}{ext}"
+
+    file_name = f"{vessel_key}.jpg"  # Все фото сохраняем как JPEG для сжатия
     dest = os.path.join(image_dir, file_name)
+
     try:
         r = requests.get(photo_url, timeout=config.PHOTO_DOWNLOAD_TIMEOUT)
         if r.status_code == 200:
-            with open(dest, "wb") as f:
-                f.write(r.content)
+            # Открыть изображение в памяти
+            img = Image.open(io.BytesIO(r.content))
+
+            # Конвертировать в RGB (для JPEG)
+            if img.mode in ("RGBA", "LA", "P"):
+                rgb_img = Image.new("RGB", img.size, (255, 255, 255))
+                rgb_img.paste(img, mask=img.split()[-1] if img.mode == "RGBA" else None)
+                img = rgb_img
+
+            # Сжать размер (макс 320x240)
+            img.thumbnail((320, 240), Image.Resampling.LANCZOS)
+
+            # Сохранить с качеством 65% (экономия ~70% размера)
+            img.save(dest, "JPEG", quality=65, optimize=True)
             logging.info(f"Фото сохранено: {dest}")
             return dest
         logging.warning(f"Фото не скачано status={r.status_code}")
         return None
     except Exception as e:
-        logging.warning(f"Ошибка скачивания фото: {e}")
+        logging.warning(f"Ошибка скачивания/сжатия фото: {e}")
         return None
 
 
 def save_to_db(vessel):
+    """Сохранить карточку судна в БД (upsert по MMSI).
+
+    Параметры:
+    - vessel: словарь с полями судна после парсинга страницы деталей.
+
+    Поведение:
+    - если MMSI отсутствует, запись пропускается;
+    - обновление учитывает приоритет источников из таблицы `source_priority`;
+    - поля обновляются через COALESCE, чтобы не перетирать валидные данные пустыми.
+
+    Побочные эффекты:
+    - выполняет commit транзакции;
+    - пишет подробные события в лог.
+    """
     conn = get_db_conn()
     cur = conn.cursor()
     imo = vessel.get("imo")
     mmsi = vessel.get("mmsi")
     logging.info(f"save_to_db: name={vessel.get('name')} imo={imo} mmsi={mmsi}")
-    if not imo and not mmsi:
-        logging.warning("Пропуск записи: нет IMO и MMSI")
+    if not mmsi:
+        logging.warning("Пропуск записи: нет MMSI")
         cur.close()
         conn.close()
         return
-    vessel_key = imo if imo else mmsi
+
     sql = """
     INSERT INTO vessels (
         name, imo, mmsi, call_sign, general_type, detailed_type, flag, year_built, length, width, dwt, gt, home_port, photo_url, photo_path, description, info_source, updated_at, vessel_key
-    ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
-    ON CONFLICT (vessel_key) DO UPDATE SET
-        name=EXCLUDED.name,
-        imo=EXCLUDED.imo,
-        mmsi=EXCLUDED.mmsi,
-        call_sign=EXCLUDED.call_sign,
-        general_type=EXCLUDED.general_type,
-        detailed_type=EXCLUDED.detailed_type,
-        flag=EXCLUDED.flag,
-        year_built=EXCLUDED.year_built,
-        length=EXCLUDED.length,
-        width=EXCLUDED.width,
-        dwt=EXCLUDED.dwt,
-        gt=EXCLUDED.gt,
-        home_port=EXCLUDED.home_port,
-        photo_url=EXCLUDED.photo_url,
-        photo_path=EXCLUDED.photo_path,
-        description=EXCLUDED.description,
-        info_source=EXCLUDED.info_source,
-        updated_at=EXCLUDED.updated_at;
+    ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,NOW(),%s)
+    ON CONFLICT (mmsi) DO UPDATE SET
+        name=COALESCE(EXCLUDED.name, vessels.name),
+        imo=COALESCE(EXCLUDED.imo, vessels.imo),
+        call_sign=COALESCE(EXCLUDED.call_sign, vessels.call_sign),
+        general_type=COALESCE(EXCLUDED.general_type, vessels.general_type),
+        detailed_type=COALESCE(EXCLUDED.detailed_type, vessels.detailed_type),
+        flag=COALESCE(EXCLUDED.flag, vessels.flag),
+        year_built=COALESCE(EXCLUDED.year_built, vessels.year_built),
+        length=COALESCE(EXCLUDED.length, vessels.length),
+        width=COALESCE(EXCLUDED.width, vessels.width),
+        dwt=COALESCE(EXCLUDED.dwt, vessels.dwt),
+        gt=COALESCE(EXCLUDED.gt, vessels.gt),
+        home_port=COALESCE(EXCLUDED.home_port, vessels.home_port),
+        photo_url=COALESCE(EXCLUDED.photo_url, vessels.photo_url),
+        photo_path=COALESCE(EXCLUDED.photo_path, vessels.photo_path),
+        description=COALESCE(EXCLUDED.description, vessels.description),
+        info_source=CASE 
+            WHEN (SELECT priority FROM source_priority WHERE source_name = vessels.info_source) <= 
+                 (SELECT priority FROM source_priority WHERE source_name = %s)
+            THEN vessels.info_source
+            ELSE %s
+        END,
+        updated_at=NOW(),
+        vessel_key=COALESCE(EXCLUDED.vessel_key, vessels.vessel_key);
     """
+    source_name = "vesselfinder.com"
     cur.execute(
         sql,
         (
@@ -157,18 +242,34 @@ def save_to_db(vessel):
             vessel.get("photo_url"),
             vessel.get("photo_path"),
             vessel.get("description"),
-            vessel.get("info_source"),
-            vessel.get("updated_at"),
-            vessel_key,
+            source_name,  # info_source в INSERT
+            vessel.get("vessel_key"),
+            source_name,  # info_source для CASE WHEN в UPDATE
+            source_name,
         ),
     )
     conn.commit()
     cur.close()
     conn.close()
-    logging.info(f"UPSERT выполнен: key={vessel_key}")
+    logging.info(f"UPSERT выполнен: mmsi={mmsi}")
 
 
 def get_html_with_selenium(url, user_agent, retries=0):
+    """Загрузить HTML страницы через Selenium с ретраями.
+
+    Параметры:
+    - url: адрес страницы VesselFinder;
+    - user_agent: строка User-Agent для текущей сессии браузера;
+    - retries: текущий номер повторной попытки.
+
+    Возвращает:
+    - строку HTML при успехе;
+    - None, если после `config.MAX_RETRIES` получить страницу не удалось.
+
+    Особенности:
+    - использует headless Chromium;
+    - ожидает ключевые элементы DOM, чтобы снизить риск неполного page_source.
+    """
     from selenium.webdriver.chrome.service import Service
 
     opts = Options()
@@ -242,6 +343,15 @@ def get_html_with_selenium(url, user_agent, retries=0):
 
 
 def get_vessel_links(page=1, vessel_type=None):
+    """Получить список ссылок на карточки судов со страницы каталога.
+
+    Параметры:
+    - page: номер страницы пагинации;
+    - vessel_type: код типа судна для серверного фильтра (опционально).
+
+    Возвращает:
+    - список абсолютных URL вида `/vessels/details/...`.
+    """
     if vessel_type:
         if page == 1:
             url = f"https://www.vesselfinder.com/vessels?type={vessel_type}"
@@ -263,6 +373,20 @@ def get_vessel_links(page=1, vessel_type=None):
 
 
 def parse_vessel(url):
+    """Распарсить детальную страницу судна и собрать нормализованную запись.
+
+    Параметры:
+    - url: абсолютный URL карточки судна.
+
+    Возвращает:
+    - словарь с полями судна (`imo`, `mmsi`, `name`, размеры, тоннаж, фото и т.д.);
+    - None при фатальной ошибке после всех попыток.
+
+    Особенности:
+    - применяет несколько fallback-regex для устойчивости к изменениям DOM;
+    - аккуратно парсит DWT, чтобы избежать ложных значений;
+    - при наличии фото скачивает и сохраняет локальный путь.
+    """
     ua = random.choice(config.USER_AGENTS)
     retries = 0
     while retries < config.MAX_RETRIES:
@@ -289,10 +413,23 @@ def parse_vessel(url):
         vessel["imo"] = rx(r"IMO\s*(\d{7})") or rx(r"IMO number\s*(\d{7})")
         vessel["mmsi"] = rx(r"MMSI\s*(\d{9})")
         vessel["call_sign"] = rx(r"Callsign\s*([A-Z0-9]+)")
-        vessel["flag"] = rx(r"Flag\s*([A-Za-z ]+?)\s+Year of Build") or rx(
-            r"AIS Flag\s*([A-Za-z]+)"
+        vessel["flag"] = (
+            rx(
+                r"Флаг\s+([A-Za-z (),\-]+?)(?:\s+Год постройки|\s+Флаг AIS|\n)",
+                flags=re.IGNORECASE,
+            )
+            or rx(
+                r"Flag\s+([A-Za-z (),\-]+?)(?:\s+Year of Build|\s+AIS Flag|\n)",
+                flags=re.IGNORECASE,
+            )
+            or rx(r"Флаг AIS\s+([A-Za-z (),\-]+?)(?:\n|$)", flags=re.IGNORECASE)
+            or rx(r"AIS Flag\s+([A-Za-z (),\-]+?)(?:\n|$)", flags=re.IGNORECASE)
         )
-        vessel["year_built"] = rx(r"Year of Build\s*(\d{4})") or rx(r"Built\s*(\d{4})")
+        vessel["year_built"] = (
+            rx(r"Year of Build\s*(\d{4})")
+            or rx(r"Built\s*(\d{4})")
+            or rx(r"Год постройки\s*(\d{4})")
+        )
         vessel["general_type"] = rx(r"Ship Type\s*([A-Za-z /-]+?)\s+Flag") or rx(
             r"is a\s+([A-Za-z /-]+?)\s+built", flags=re.IGNORECASE
         )
@@ -363,7 +500,20 @@ def parse_vessel(url):
 
 
 def main():
-    mode = os.getenv("SCRAPER_MODE", config.MODE)
+    """Точка входа скрапера VesselFinder.
+
+    Сценарий:
+    1) определяет режим (`test`/`full`) и лимиты;
+    2) восстанавливает прогресс из `scraper_state`;
+    3) обходит страницы каталога и карточки судов;
+    4) сохраняет результат в БД и периодически фиксирует состояние.
+
+    Побочные эффекты:
+    - сетевые запросы к VesselFinder;
+    - запись в PostgreSQL;
+    - сохранение изображений на диск.
+    """
+    mode = os.getenv("SCRAPER_MODE", "test")
     logging.info(f"main() started, режим: {mode}")
 
     # Загружаем сохраненное состояние
@@ -420,13 +570,23 @@ def main():
                 save_to_db(vessel)
                 count += 1
 
-            delay = random.uniform(config.REQUEST_DELAY_MIN, config.REQUEST_DELAY_MAX)
+            delay = random.uniform(config.DETAIL_DELAY_MIN, config.DETAIL_DELAY_MAX)
             logging.info(f"Задержка {delay:.1f} сек")
             time.sleep(delay)
 
         # Сохраняем состояние после каждой страницы
         save_scraper_state(mode, page + 1, count)
         page += 1
+
+        # Периодический перерыв для снижения риска блокировки
+        if page % config.BREAK_AFTER_PAGES == 0:
+            break_time = random.uniform(
+                config.BREAK_DURATION_MIN, config.BREAK_DURATION_MAX
+            )
+            logging.info(
+                f"Перерыв {break_time:.0f} сек после {config.BREAK_AFTER_PAGES} страниц..."
+            )
+            time.sleep(break_time)
 
     save_scraper_state(mode, page, count)
     logging.info(f"main() finished, обработано судов: {count}")

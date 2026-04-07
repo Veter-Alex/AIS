@@ -1,45 +1,72 @@
-import React, { useState } from 'react';
-import type { VesselFilters } from '../types/vessel';
+import React, { useState } from "react";
+import type { VesselFilters } from "../types/vessel";
 
 interface FilterPanelProps {
   filters: VesselFilters;
   onFilterChange: (filters: VesselFilters) => void;
   vesselTypes: string[];
   flags: string[];
+  sources: string[];
 }
 
-const FilterPanel: React.FC<FilterPanelProps> = ({ filters, onFilterChange, vesselTypes, flags }) => {
+// Боковая панель фильтров списка судов.
+//
+// Принцип: все фильтры контролируются родителем через единый объект `filters`,
+// а компонент отвечает только за UI и генерацию нового состояния.
+const FilterPanel: React.FC<FilterPanelProps> = ({
+  filters,
+  onFilterChange,
+  vesselTypes,
+  flags,
+  sources,
+}) => {
+  // Сворачивание панели полезно на узких экранах и при большом числе опций.
   const [isExpanded, setIsExpanded] = useState(false);
 
+  // Мультивыбор типов: повторный клик по элементу снимает фильтр.
   const handleTypeChange = (type: string) => {
     const currentTypes = filters.vessel_types || [];
     const newTypes = currentTypes.includes(type)
-      ? currentTypes.filter(t => t !== type)
+      ? currentTypes.filter((t) => t !== type)
       : [...currentTypes, type];
     onFilterChange({ ...filters, vessel_types: newTypes });
   };
 
+  // Мультивыбор флагов по той же схеме toggle.
   const handleFlagChange = (flag: string) => {
     const currentFlags = filters.flags || [];
     const newFlags = currentFlags.includes(flag)
-      ? currentFlags.filter(f => f !== flag)
+      ? currentFlags.filter((f) => f !== flag)
       : [...currentFlags, flag];
     onFilterChange({ ...filters, flags: newFlags });
   };
 
+  // Мультивыбор источников данных.
+  const handleSourceChange = (source: string) => {
+    const currentSources = filters.info_sources || [];
+    const newSources = currentSources.includes(source)
+      ? currentSources.filter((s) => s !== source)
+      : [...currentSources, source];
+    onFilterChange({ ...filters, info_sources: newSources });
+  };
+
+  // Полный сброс только фильтров, без разрушения пагинации/сортировки в родителе.
   const clearFilters = () => {
     onFilterChange({
       vessel_types: [],
       flags: [],
+      info_sources: [],
       year_from: undefined,
       year_to: undefined,
     });
   };
 
-  const hasActiveFilters = 
-    (filters.vessel_types?.length || 0) > 0 || 
-    (filters.flags?.length || 0) > 0 || 
-    filters.year_from !== undefined || 
+  // Вычисляем, есть ли активные ограничения, чтобы показывать кнопку "Сбросить".
+  const hasActiveFilters =
+    (filters.vessel_types?.length || 0) > 0 ||
+    (filters.flags?.length || 0) > 0 ||
+    (filters.info_sources?.length || 0) > 0 ||
+    filters.year_from !== undefined ||
     filters.year_to !== undefined;
 
   return (
@@ -59,7 +86,7 @@ const FilterPanel: React.FC<FilterPanelProps> = ({ filters, onFilterChange, vess
             onClick={() => setIsExpanded(!isExpanded)}
             className="text-gray-400 hover:text-gray-300"
           >
-            {isExpanded ? '▲' : '▼'}
+            {isExpanded ? "▲" : "▼"}
           </button>
         </div>
       </div>
@@ -73,7 +100,10 @@ const FilterPanel: React.FC<FilterPanelProps> = ({ filters, onFilterChange, vess
             </label>
             <div className="max-h-48 overflow-y-auto space-y-2 border border-dark-border rounded p-2">
               {vesselTypes.map((type) => (
-                <label key={type} className="flex items-center space-x-2 hover:bg-dark-hover p-1 rounded cursor-pointer">
+                <label
+                  key={type}
+                  className="flex items-center space-x-2 hover:bg-dark-hover p-1 rounded cursor-pointer"
+                >
                   <input
                     type="checkbox"
                     checked={filters.vessel_types?.includes(type) || false}
@@ -93,7 +123,10 @@ const FilterPanel: React.FC<FilterPanelProps> = ({ filters, onFilterChange, vess
             </label>
             <div className="max-h-48 overflow-y-auto space-y-2 border border-dark-border rounded p-2">
               {flags.map((flag) => (
-                <label key={flag} className="flex items-center space-x-2 hover:bg-dark-hover p-1 rounded cursor-pointer">
+                <label
+                  key={flag}
+                  className="flex items-center space-x-2 hover:bg-dark-hover p-1 rounded cursor-pointer"
+                >
                   <input
                     type="checkbox"
                     checked={filters.flags?.includes(flag) || false}
@@ -101,6 +134,29 @@ const FilterPanel: React.FC<FilterPanelProps> = ({ filters, onFilterChange, vess
                     className="w-4 h-4 rounded border-gray-600 bg-dark-bg text-blue-600 focus:ring-blue-500"
                   />
                   <span className="text-sm text-gray-300">{flag}</span>
+                </label>
+              ))}
+            </div>
+          </div>
+
+          {/* Источник данных */}
+          <div>
+            <label className="block text-sm font-medium text-gray-300 mb-2">
+              Источник данных ({filters.info_sources?.length || 0} выбрано)
+            </label>
+            <div className="max-h-48 overflow-y-auto space-y-2 border border-dark-border rounded p-2">
+              {sources.map((source) => (
+                <label
+                  key={source}
+                  className="flex items-center space-x-2 hover:bg-dark-hover p-1 rounded cursor-pointer"
+                >
+                  <input
+                    type="checkbox"
+                    checked={filters.info_sources?.includes(source) || false}
+                    onChange={() => handleSourceChange(source)}
+                    className="w-4 h-4 rounded border-gray-600 bg-dark-bg text-blue-600 focus:ring-blue-500"
+                  />
+                  <span className="text-sm text-gray-300">{source}</span>
                 </label>
               ))}
             </div>
@@ -115,15 +171,29 @@ const FilterPanel: React.FC<FilterPanelProps> = ({ filters, onFilterChange, vess
               <input
                 type="number"
                 placeholder="От"
-                value={filters.year_from || ''}
-                onChange={(e) => onFilterChange({ ...filters, year_from: e.target.value ? parseInt(e.target.value) : undefined })}
+                value={filters.year_from || ""}
+                onChange={(e) =>
+                  onFilterChange({
+                    ...filters,
+                    year_from: e.target.value
+                      ? parseInt(e.target.value)
+                      : undefined,
+                  })
+                }
                 className="w-1/2 px-3 py-2 bg-dark-bg border border-dark-border rounded text-gray-100 focus:outline-none focus:ring-2 focus:ring-blue-500"
               />
               <input
                 type="number"
                 placeholder="До"
-                value={filters.year_to || ''}
-                onChange={(e) => onFilterChange({ ...filters, year_to: e.target.value ? parseInt(e.target.value) : undefined })}
+                value={filters.year_to || ""}
+                onChange={(e) =>
+                  onFilterChange({
+                    ...filters,
+                    year_to: e.target.value
+                      ? parseInt(e.target.value)
+                      : undefined,
+                  })
+                }
                 className="w-1/2 px-3 py-2 bg-dark-bg border border-dark-border rounded text-gray-100 focus:outline-none focus:ring-2 focus:ring-blue-500"
               />
             </div>

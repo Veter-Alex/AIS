@@ -2,17 +2,33 @@
 @tailwind components;
 @tailwind utilities;
 
+/*
+  Базовые глобальные стили приложения.
+
+  Правило стиля комментариев:
+  - описываем назначение визуального слоя и его влияние на UX;
+  - не дублируем очевидные CSS-свойства;
+  - держим комментарии рядом с системными токенами, чтобы упрощать поддержку.
+*/
 :root {
-  font-family: Inter, system-ui, Avenir, Helvetica, Arial, sans-serif;
+  /* Базовая типографика и фирменный фон для всех экранов приложения. */
+  font-family: "Segoe UI", "Trebuchet MS", Verdana, sans-serif;
   line-height: 1.5;
   font-weight: 400;
+  color: #e2e8f0;
+  background:
+    radial-gradient(circle at top left, rgba(14, 165, 233, 0.18), transparent 28%),
+    linear-gradient(180deg, #020617 0%, #0f172a 100%);
 }
 
 body {
+  /* Body оставляем прозрачным, чтобы фоновый градиент из :root был единым. */
   margin: 0;
   min-height: 100vh;
+  background: transparent;
 }
 
 #root {
+  /* Корневой контейнер всегда на высоту viewport для полноэкранных макетов. */
   min-height: 100vh;
 }

@@ -1,0 +1,3 @@
+# Зависимости для синхронизации БД
+
+psycopg2-binary==2.9.9  # Драйвер PostgreSQL для Python

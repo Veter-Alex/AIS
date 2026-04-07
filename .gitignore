@@ -1,5 +1,7 @@
 # Data directories (PostgreSQL database and vessel images)
 data/
+AIS_offline_package/data/
+База Данных PKS/
 *.sql.backup
 *.dump
 
@@ -73,6 +75,7 @@ Thumbs.db
 tmp/
 temp/
 *.tmp
+vessel_frontend/tmp_*.json
 
 # Debug files
 debug_page.html

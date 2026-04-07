@@ -1,3 +1,12 @@
+"""
+Диагностический утилитарный скрипт для отладки HTML страницы судна на VesselFinder.
+
+Назначение:
+- быстро получить "сырой" HTML после рендера Selenium;
+- вывести ключевые фрагменты (таблицы, изображения, метрики IMO/MMSI);
+- сохранить страницу в файл для ручного анализа селекторов.
+"""
+
 import logging
 import os
 import random
@@ -24,12 +33,14 @@ USER_AGENTS = [
 
 
 def choose_user_agent() -> str:
+    # Позволяем явно задать UA через ENV для воспроизводимого дебага.
     if USER_AGENT_ENV:
         return USER_AGENT_ENV
     return random.choice(USER_AGENTS)
 
 
 def fetch_html(url: str) -> str:
+    # Минимальная headless-конфигурация Chrome для стабильного получения page_source.
     opts = Options()
     opts.add_argument("--headless")
     opts.add_argument("--no-sandbox")
@@ -54,6 +65,8 @@ def fetch_html(url: str) -> str:
 
 
 def summarize(html: str):
+    # Печатаем ключевые диагностические блоки, чтобы быстро понять,
+    # какие селекторы/данные доступны в текущей версии страницы.
     length = len(html)
     print(f"\n===== RAW HTML LENGTH: {length} bytes =====")
     print("===== RAW HTML FIRST 2000 CHARS =====")
@@ -102,6 +115,7 @@ def summarize(html: str):
 
 
 def main():
+    # Точка входа: скачиваем HTML и печатаем подробную сводку для отладки.
     logging.info(f"Fetching HTML for {URL}")
     html = fetch_html(URL)
     summarize(html)

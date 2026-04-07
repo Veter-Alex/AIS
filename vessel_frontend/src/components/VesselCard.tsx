@@ -1,12 +1,14 @@
-import React from 'react';
-import { useNavigate } from 'react-router-dom';
-import { vesselApi } from '../api/vesselApi';
-import type { Vessel } from '../types/vessel';
+import React from "react";
+import { useNavigate } from "react-router-dom";
+import { vesselApi } from "../api/vesselApi";
+import type { Vessel } from "../types/vessel";
 
 interface VesselCardProps {
   vessel: Vessel;
 }
 
+// Карточка судна в грид-представлении.
+// Выбираем IMO как основной идентификатор перехода; если его нет, используем MMSI.
 const VesselCard: React.FC<VesselCardProps> = ({ vessel }) => {
   const navigate = useNavigate();
   const imageUrl = vesselApi.getImageUrl(vessel.photo_path);
@@ -24,13 +26,15 @@ const VesselCard: React.FC<VesselCardProps> = ({ vessel }) => {
             alt={vessel.name}
             className="w-full h-full object-cover"
             onError={(e) => {
-              e.currentTarget.style.display = 'none';
+              e.currentTarget.style.display = "none";
             }}
           />
         </div>
       )}
       <div className="p-4 space-y-2">
-        <h3 className="text-lg font-semibold text-gray-100 truncate">{vessel.name}</h3>
+        <h3 className="text-lg font-semibold text-gray-100 truncate">
+          {vessel.name}
+        </h3>
         <div className="grid grid-cols-2 gap-2 text-sm">
           <div>
             <span className="text-gray-500">IMO:</span>

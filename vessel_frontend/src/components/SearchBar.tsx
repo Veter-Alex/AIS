@@ -1,4 +1,4 @@
-import React from 'react';
+import React from "react";
 
 interface SearchBarProps {
   value: string;
@@ -6,7 +6,11 @@ interface SearchBarProps {
   onSearch: () => void;
 }
 
+// Поисковая строка списка судов.
+// Компонент изолирует поведение submit, чтобы родитель управлял только состоянием.
 const SearchBar: React.FC<SearchBarProps> = ({ value, onChange, onSearch }) => {
+  // Единая точка отправки формы: блокируем нативный submit и
+  // прокидываем управление в onSearch родительской страницы.
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     onSearch();

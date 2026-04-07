@@ -1,4 +1,4 @@
-import React from 'react';
+import React from "react";
 
 interface PaginationProps {
   currentPage: number;
@@ -6,7 +6,15 @@ interface PaginationProps {
   onPageChange: (page: number) => void;
 }
 
-const Pagination: React.FC<PaginationProps> = ({ currentPage, totalPages, onPageChange }) => {
+// Пагинация с адаптивным набором кнопок и сокращениями "...".
+// Логика удерживает текущую страницу в фокусе и не перегружает интерфейс длинным списком.
+const Pagination: React.FC<PaginationProps> = ({
+  currentPage,
+  totalPages,
+  onPageChange,
+}) => {
+  // Формируем отображаемый диапазон страниц.
+  // Всегда показываем первую и последнюю страницы, а середину сжимаем при необходимости.
   const getPageNumbers = () => {
     const pages: (number | string)[] = [];
     const showPages = 5;
@@ -28,13 +36,13 @@ const Pagination: React.FC<PaginationProps> = ({ currentPage, totalPages, onPage
         start = totalPages - showPages + 2;
       }
 
-      if (start > 2) pages.push('...');
+      if (start > 2) pages.push("...");
 
       for (let i = start; i <= end; i++) {
         pages.push(i);
       }
 
-      if (end < totalPages - 1) pages.push('...');
+      if (end < totalPages - 1) pages.push("...");
 
       pages.push(totalPages);
     }
@@ -42,6 +50,7 @@ const Pagination: React.FC<PaginationProps> = ({ currentPage, totalPages, onPage
     return pages;
   };
 
+  // Если страница одна, пагинация не нужна.
   if (totalPages <= 1) return null;
 
   return (
@@ -56,15 +65,15 @@ const Pagination: React.FC<PaginationProps> = ({ currentPage, totalPages, onPage
 
       {getPageNumbers().map((page, idx) => (
         <React.Fragment key={idx}>
-          {page === '...' ? (
+          {page === "..." ? (
             <span className="px-3 py-2 text-gray-500">...</span>
           ) : (
             <button
               onClick={() => onPageChange(page as number)}
               className={`px-3 py-2 rounded transition-colors ${
                 currentPage === page
-                  ? 'bg-blue-600 text-white'
-                  : 'bg-dark-card border border-dark-border text-gray-300 hover:bg-dark-hover'
+                  ? "bg-blue-600 text-white"
+                  : "bg-dark-card border border-dark-border text-gray-300 hover:bg-dark-hover"
               }`}
             >
               {page}

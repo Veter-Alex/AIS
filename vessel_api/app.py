@@ -1,3 +1,17 @@
+"""
+Основной REST API для каталога судов.
+
+Назначение модуля:
+- отдавать список и карточки судов;
+- выполнять фильтрацию, сортировку и пагинацию;
+- поддерживать частичное обновление записей;
+- предоставлять статистику и экспорт данных.
+
+Стиль комментариев:
+- поясняем архитектурные решения и ограничения;
+- в docstring фиксируем вход/выход и поведение при ошибках.
+"""
+
 import csv
 import json
 import os
@@ -76,6 +90,11 @@ class StatsResponse(BaseModel):
 
 
 def get_db_conn():
+    """Создать подключение к PostgreSQL.
+
+    Возвращает:
+    - psycopg2 connection, который вызывающая сторона обязана закрыть.
+    """
     return psycopg2.connect(
         dbname=os.getenv("POSTGRES_DB", "vessels_db"),
         user=os.getenv("POSTGRES_USER", "user"),
@@ -92,12 +111,24 @@ def get_vessels(
     search: Optional[str] = Query(None),
     vessel_types: Optional[str] = Query(None),
     flags: Optional[str] = Query(None),
+    info_sources: Optional[str] = Query(None),
     year_from: Optional[int] = Query(None),
     year_to: Optional[int] = Query(None),
     sort_by: Optional[str] = Query("name"),
     sort_order: Optional[str] = Query("asc"),
 ):
-    """Получить список судов с фильтрацией, поиском, сортировкой и пагинацией"""
+    """Получить список судов с фильтрацией, поиском, сортировкой и пагинацией.
+
+    Параметры:
+    - page/per_page: параметры пагинации;
+    - search: строка поиска по name/imo/mmsi;
+    - vessel_types/flags/info_sources: мультивыборные фильтры;
+    - year_from/year_to: диапазон по году постройки;
+    - sort_by/sort_order: сортировка только по whitelist-полям.
+
+    Возвращает:
+    - объект с total/page/per_page/vessels.
+    """
     try:
         conn = get_db_conn()
         cur = conn.cursor(cursor_factory=RealDictCursor)
@@ -125,6 +156,13 @@ def get_vessels(
             placeholders = ",".join(["%s"] * len(flags_list))
             where_clauses.append(f"flag IN ({placeholders})")
             params.extend(flags_list)
+
+        # Фильтр по источникам (мультивыбор)
+        if info_sources:
+            sources_list = info_sources.split(",")
+            placeholders = ",".join(["%s"] * len(sources_list))
+            where_clauses.append(f"info_source IN ({placeholders})")
+            params.extend(sources_list)
 
         # Фильтр по годам
         if year_from:
@@ -209,7 +247,14 @@ def get_vessels(
 
 @app.get("/vessels/{imo}", response_model=Vessel)
 def get_vessel_by_imo(imo: str):
-    """Получить детальную информацию о судне по IMO или MMSI"""
+    """Получить детальную информацию о судне по IMO или MMSI.
+
+    Параметры:
+    - imo: значение IMO или MMSI (поддерживается оба варианта).
+
+    Ошибки:
+    - 404, если запись не найдена.
+    """
     try:
         conn = get_db_conn()
         cur = conn.cursor(cursor_factory=RealDictCursor)
@@ -255,7 +300,13 @@ def get_vessel_by_imo(imo: str):
 
 @app.patch("/vessels/{imo}", response_model=Vessel)
 def update_vessel(imo: str, vessel_update: VesselUpdate):
-    """Обновить информацию о судне"""
+    """Частично обновить информацию о судне.
+
+    Особенности:
+    - обновляются только поля, переданные в payload;
+    - автоматически обновляется updated_at;
+    - поиск записи выполняется по IMO или MMSI.
+    """
     try:
         conn = get_db_conn()
         cur = conn.cursor(cursor_factory=RealDictCursor)
@@ -361,7 +412,13 @@ def update_vessel(imo: str, vessel_update: VesselUpdate):
 
 @app.get("/vessels/stats/summary", response_model=StatsResponse)
 def get_stats():
-    """Получить статистику по базе данных"""
+    """Получить агрегированную статистику по базе судов.
+
+    Возвращает:
+    - общее число записей;
+    - распределение по general_type;
+    - распределение по flag.
+    """
     try:
         conn = get_db_conn()
         cur = conn.cursor(cursor_factory=RealDictCursor)
@@ -405,16 +462,52 @@ def get_stats():
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@app.get("/vessels/stats/sources")
+def get_sources():
+    """Получить список источников данных с количеством судов."""
+    try:
+        conn = get_db_conn()
+        cur = conn.cursor(cursor_factory=RealDictCursor)
+
+        cur.execute(
+            """
+            SELECT info_source, COUNT(*) as count
+            FROM vessels
+            WHERE info_source IS NOT NULL
+            GROUP BY info_source
+            ORDER BY count DESC
+        """
+        )
+        sources = cur.fetchall()
+
+        cur.close()
+        conn.close()
+
+        return {"sources": sources}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @app.get("/vessels/export/{format}")
 def export_vessels(
     format: str,
     search: Optional[str] = Query(None),
     vessel_types: Optional[str] = Query(None),
     flags: Optional[str] = Query(None),
+    info_sources: Optional[str] = Query(None),
     year_from: Optional[int] = Query(None),
     year_to: Optional[int] = Query(None),
 ):
-    """Экспорт данных в CSV, JSON или Excel"""
+    """Экспорт отфильтрованного набора судов.
+
+    Поддерживаемые форматы:
+    - csv
+    - json
+
+    Примечание:
+    - фильтры полностью совпадают с endpoint /vessels/,
+      чтобы выгрузка соответствовала текущему состоянию UI.
+    """
     try:
         conn = get_db_conn()
         cur = conn.cursor(cursor_factory=RealDictCursor)
@@ -439,6 +532,12 @@ def export_vessels(
             placeholders = ",".join(["%s"] * len(flags_list))
             where_clauses.append(f"flag IN ({placeholders})")
             params.extend(flags_list)
+
+        if info_sources:
+            sources_list = info_sources.split(",")
+            placeholders = ",".join(["%s"] * len(sources_list))
+            where_clauses.append(f"info_source IN ({placeholders})")
+            params.extend(sources_list)
 
         if year_from:
             where_clauses.append("year_built >= %s")
@@ -494,7 +593,7 @@ def export_vessels(
 
 @app.get("/images/{filename}")
 def get_image(filename: str):
-    """Отдать фото судна"""
+    """Отдать фото судна из локального каталога изображений."""
     image_path = f"/app/images/{filename}"
     if not os.path.exists(image_path):
         raise HTTPException(status_code=404, detail="Image not found")
@@ -503,6 +602,12 @@ def get_image(filename: str):
 
 @app.post("/vessels/")
 def add_vessel(vessel: Vessel):
+    """Добавить новую запись судна в базу.
+
+    Примечание:
+    - имя нормализуется (сжатие множественных пробелов),
+      чтобы уменьшить дубликаты из-за разных форматов источников.
+    """
     try:
         conn = get_db_conn()
         cur = conn.cursor()

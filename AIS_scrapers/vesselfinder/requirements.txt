@@ -3,3 +3,4 @@ beautifulsoup4
 psycopg2-binary
 selenium>=4.6.0
 webdriver-manager
+Pillow
