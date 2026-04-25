@@ -3,7 +3,7 @@ import json
 import os
 from typing import Any, Dict, List, Optional
 
-import psycopg2
+from db import get_db_cursor
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import JSONResponse
 from psycopg2.extras import RealDictCursor
@@ -273,26 +273,6 @@ def _normalize_retrieval_mode(mode: Optional[str]) -> str:
     return "hybrid"
 
 
-def get_db_conn():
-    # Создаем новое подключение к PostgreSQL на каждый запрос.
-    # Параметры берутся из переменных окружения Docker Compose.
-    # Если переменные не заданы, используются безопасные дефолты.
-    #
-    # Почему агенту вообще полезно ходить в БД напрямую:
-    # - для точных запросов SQL надежнее, чем LLM;
-    # - не нужно гонять лишние запросы через другой backend;
-    # - позже в той же БД можно хранить RAG-таблицы и embeddings.
-    #
-    # Когда сервис станет более зрелым, здесь можно перейти на пул подключений.
-    return psycopg2.connect(
-        dbname=os.getenv("POSTGRES_DB", "vessels_db"),
-        user=os.getenv("POSTGRES_USER", "user"),
-        password=os.getenv("POSTGRES_PASSWORD", "password"),
-        host=os.getenv("POSTGRES_HOST", "db"),
-        port=os.getenv("POSTGRES_PORT", "5432"),
-    )
-
-
 def _extract_relevant_lines(
     content: str, question: str, max_lines: int = 4
 ) -> List[str]:
@@ -508,12 +488,10 @@ def run_sql_lookup(question: str, limit: int) -> List[Dict[str, Any]]:
     # уже структурирована: IMO, MMSI, флаг, тип, тоннаж, год постройки и т.д.
     # Для таких фактов SQL должен быть первым инструментом, а не запасным.
     q = question.lower().strip()
-    conn = get_db_conn()
-    try:
-        # RealDictCursor возвращает строки как словари:
-        # {"name": "...", "imo": "..."} вместо кортежей.
-        # Это удобно как для JSON API, так и для будущей передачи данных в LLM-контекст.
-        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+    # RealDictCursor возвращает строки как словари:
+    # {"name": "...", "imo": "..."} вместо кортежей.
+    # Это удобно как для JSON API, так и для будущей передачи данных в LLM-контекст.
+    with get_db_cursor(cursor_factory=RealDictCursor) as cur:
             # Специальная ветка для вопросов с IMO.
             # Логика простая: ищем первое "похожее на номер" число в тексте.
             # Это пример детерминированного сценария: если вопрос точный,
@@ -568,10 +546,6 @@ def run_sql_lookup(question: str, limit: int) -> List[Dict[str, Any]]:
                 (f"%{question}%", f"%{question}%", f"%{question}%", limit),
             )
             return cur.fetchall()
-    finally:
-        # Гарантированно закрываем подключение даже при ошибках.
-        # Это важно, чтобы не копить зависшие соединения при отладке и тестах.
-        conn.close()
 
 
 @app.get("/health")

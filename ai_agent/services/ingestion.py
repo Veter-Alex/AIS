@@ -6,7 +6,7 @@ from datetime import datetime, timezone
 from functools import lru_cache
 from typing import Any, Dict, List, Optional
 
-import psycopg2
+from db import get_db_conn, get_db_connections
 from psycopg2.extras import Json, RealDictCursor
 
 # Этот модуль отвечает за первичную индексацию данных судов в ai-схему.
@@ -53,17 +53,6 @@ def _get_fastembed_model():
 
     text_embedding_cls = getattr(fastembed_module, "TextEmbedding")
     return text_embedding_cls(model_name=DEFAULT_EMBEDDING_MODEL)
-
-
-def get_db_conn():
-    # Подключение к той же БД, где уже работает основная система.
-    return psycopg2.connect(
-        dbname=os.getenv("POSTGRES_DB", "vessels_db"),
-        user=os.getenv("POSTGRES_USER", "user"),
-        password=os.getenv("POSTGRES_PASSWORD", "password"),
-        host=os.getenv("POSTGRES_HOST", "db"),
-        port=os.getenv("POSTGRES_PORT", "5432"),
-    )
 
 
 def _clean(value: Any) -> str:
@@ -535,19 +524,18 @@ def run_ingestion(
 ) -> Dict[str, int]:
     # Главная функция индексации.
     # Возвращает статистику, чтобы было понятно, сколько записей обработано.
-    conn = get_db_conn()
-    meta_conn = get_db_conn()
-    meta_conn.autocommit = True
-    job_id: Optional[int] = None
-    progress_payload: Dict[str, Any] = {}
-    try:
-        with conn.cursor(cursor_factory=RealDictCursor) as cur:
-            has_vector_col = _has_pgvector_column(cur)
-            since_ts = _resolve_ingestion_since(
-                cur=cur,
-                incremental=incremental,
-                updated_after=updated_after,
-            )
+    with get_db_connections() as (conn, meta_conn):
+        meta_conn.autocommit = True
+        job_id: Optional[int] = None
+        progress_payload: Dict[str, Any] = {}
+        try:
+            with conn.cursor(cursor_factory=RealDictCursor) as cur:
+                has_vector_col = _has_pgvector_column(cur)
+                since_ts = _resolve_ingestion_since(
+                    cur=cur,
+                    incremental=incremental,
+                    updated_after=updated_after,
+                )
 
             # Берем суда из основной таблицы.
             query = """
@@ -587,38 +575,38 @@ def run_ingestion(
                 query += " LIMIT %s"
                 params.append(limit)
 
-            cur.execute(query, params)
-            vessels = cur.fetchall()
+                cur.execute(query, params)
+                vessels = cur.fetchall()
 
-        progress_payload = {
-            "limit": limit,
-            "incremental": incremental,
-            "updated_after": updated_after,
-            "resolved_since": (since_ts.isoformat() if since_ts is not None else None),
-            "progress": {
-                "total": len(vessels),
-                "processed": 0,
-                "documents_upserted": 0,
-                "chunks_upserted": 0,
-            },
-        }
-        job_id = _create_ingestion_job(meta_conn, progress_payload)
+            progress_payload = {
+                "limit": limit,
+                "incremental": incremental,
+                "updated_after": updated_after,
+                "resolved_since": (since_ts.isoformat() if since_ts is not None else None),
+                "progress": {
+                    "total": len(vessels),
+                    "processed": 0,
+                    "documents_upserted": 0,
+                    "chunks_upserted": 0,
+                },
+            }
+            job_id = _create_ingestion_job(meta_conn, progress_payload)
 
-        documents_upserted = 0
-        chunks_upserted = 0
+            documents_upserted = 0
+            chunks_upserted = 0
 
-        with conn.cursor(cursor_factory=RealDictCursor) as cur:
-            for vessel in vessels:
-                source_pk = str(vessel["id"])
-                title = _clean(vessel.get("name")) or f"Vessel {source_pk}"
-                profile_text = build_vessel_text(vessel)
-                metadata = {
-                    "imo": _clean(vessel.get("imo")),
-                    "mmsi": _clean(vessel.get("mmsi")),
-                    "flag": _clean(vessel.get("flag")),
-                    "general_type": _clean(vessel.get("general_type")),
-                    "info_source": _clean(vessel.get("info_source")),
-                }
+            with conn.cursor(cursor_factory=RealDictCursor) as cur:
+                for vessel in vessels:
+                    source_pk = str(vessel["id"])
+                    title = _clean(vessel.get("name")) or f"Vessel {source_pk}"
+                    profile_text = build_vessel_text(vessel)
+                    metadata = {
+                        "imo": _clean(vessel.get("imo")),
+                        "mmsi": _clean(vessel.get("mmsi")),
+                        "flag": _clean(vessel.get("flag")),
+                        "general_type": _clean(vessel.get("general_type")),
+                        "info_source": _clean(vessel.get("info_source")),
+                    }
 
                 # Upsert документа в ai.documents.
                 cur.execute(
@@ -696,68 +684,65 @@ def run_ingestion(
                         )
                     chunks_upserted += 1
 
-                processed = documents_upserted
-                if processed % 100 == 0:
-                    conn.commit()
-                    progress_payload["progress"] = {
-                        "total": len(vessels),
-                        "processed": processed,
-                        "documents_upserted": documents_upserted,
-                        "chunks_upserted": chunks_upserted,
-                    }
-                    _update_ingestion_job(meta_conn, job_id, payload=progress_payload)
+                    processed = documents_upserted
+                    if processed % 100 == 0:
+                        conn.commit()
+                        progress_payload["progress"] = {
+                            "total": len(vessels),
+                            "processed": processed,
+                            "documents_upserted": documents_upserted,
+                            "chunks_upserted": chunks_upserted,
+                        }
+                        _update_ingestion_job(meta_conn, job_id, payload=progress_payload)
 
-        conn.commit()
-        progress_payload["progress"] = {
-            "total": len(vessels),
-            "processed": len(vessels),
-            "documents_upserted": documents_upserted,
-            "chunks_upserted": chunks_upserted,
-        }
-        _update_ingestion_job(
-            meta_conn,
-            job_id,
-            status="done",
-            payload=progress_payload,
-            error_message="",
-            finished=True,
-        )
-        return {
-            "job_id": job_id,
-            "vessels_processed": len(vessels),
-            "documents_upserted": documents_upserted,
-            "chunks_upserted": chunks_upserted,
-        }
-    except Exception as exc:
-        conn.rollback()
-
-        # Пытаемся записать ошибку в ingestion_jobs,
-        # чтобы вы могли видеть причину падения прямо в БД.
-        try:
-            if job_id is None:
-                fallback_payload = {
-                    "limit": limit,
-                    "incremental": incremental,
-                    "updated_after": updated_after,
-                }
-                job_id = _create_ingestion_job(meta_conn, fallback_payload)
-
-            progress_payload["error"] = str(exc)
+            conn.commit()
+            progress_payload["progress"] = {
+                "total": len(vessels),
+                "processed": len(vessels),
+                "documents_upserted": documents_upserted,
+                "chunks_upserted": chunks_upserted,
+            }
             _update_ingestion_job(
                 meta_conn,
                 job_id,
-                status="failed",
+                status="done",
                 payload=progress_payload,
-                error_message=str(exc),
+                error_message="",
                 finished=True,
             )
-        except Exception:
-            pass
+            return {
+                "job_id": job_id,
+                "vessels_processed": len(vessels),
+                "documents_upserted": documents_upserted,
+                "chunks_upserted": chunks_upserted,
+            }
+        except Exception as exc:
+            conn.rollback()
 
-        raise
-    finally:
-        conn.close()
-        meta_conn.close()
+            # Пытаемся записать ошибку в ingestion_jobs,
+            # чтобы вы могли видеть причину падения прямо в БД.
+            try:
+                if job_id is None:
+                    fallback_payload = {
+                        "limit": limit,
+                        "incremental": incremental,
+                        "updated_after": updated_after,
+                    }
+                    job_id = _create_ingestion_job(meta_conn, fallback_payload)
+
+                progress_payload["error"] = str(exc)
+                _update_ingestion_job(
+                    meta_conn,
+                    job_id,
+                    status="failed",
+                    payload=progress_payload,
+                    error_message=str(exc),
+                    finished=True,
+                )
+            except Exception:
+                pass
+
+            raise
 
 
 def list_ingestion_jobs(limit: int = 20) -> List[Dict[str, Any]]:
