@@ -105,6 +105,16 @@ def test_maritime_database_golden():
     assert vessel["width"] == 60
 
 
+def test_maritime_database_normalizers():
+    module = _load_scraper("maritime_norm", "maritime_database")
+    assert module.normalize_mmsi("477 642 800") == "477642800"
+    assert module.normalize_mmsi("1") is None
+    assert module.normalize_vessel_name("ARAON IMO: 9490935 MMSI: 441619000") == "ARAON"
+    assert module.normalize_label_text(" unknown ") is None
+    assert module.sanitize_numeric("399", min_value=10, max_value=500) == 399
+    assert module.sanitize_numeric("1", min_value=10, max_value=500) is None
+
+
 def test_vesselfinder_golden(monkeypatch):
     module = _load_scraper("vesselfinder_scraper", "vesselfinder")
     monkeypatch.setattr(
