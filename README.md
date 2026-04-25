@@ -63,6 +63,29 @@ npm install
 npm run dev
 ```
 
+## Python окружение (.venv)
+
+Для локальных Python-команд в проекте используйте изолированное окружение `.venv`
+(Python 3.8.10), а не глобальный интерпретатор.
+
+Создание окружения (один раз):
+
+```bash
+py -3.8 -m venv .venv
+```
+
+Установка зависимостей скраперов и тестов:
+
+```bash
+.\.venv\Scripts\python.exe -m pip install -r AIS_scrapers/marinetraffic/requirements.txt -r AIS_scrapers/myshiptracking/requirements.txt -r AIS_scrapers/maritime_database/requirements.txt -r AIS_scrapers/vesselfinder/requirements.txt pytest
+```
+
+Запуск parser smoke/golden тестов:
+
+```bash
+.\.venv\Scripts\python.exe -m pytest AIS_scrapers/tests/test_parser_smoke.py -q
+```
+
 ## Полезные команды
 
 Пересборка AI и frontend:
