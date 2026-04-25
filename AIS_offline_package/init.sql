@@ -1,13 +1,13 @@
 -- SQL для создания таблицы vessels
 CREATE TABLE IF NOT EXISTS vessels (
     id SERIAL PRIMARY KEY,
-    name VARCHAR(100),
+    name VARCHAR(200),
     imo VARCHAR(20),
     mmsi VARCHAR(20) NOT NULL UNIQUE,
     call_sign VARCHAR(20),
-    general_type VARCHAR(50),
+    general_type VARCHAR(100),
     detailed_type VARCHAR(100),
-    flag VARCHAR(50),
+    flag VARCHAR(100),
     year_built INTEGER,
     length INTEGER,
     width INTEGER,
@@ -16,9 +16,10 @@ CREATE TABLE IF NOT EXISTS vessels (
     home_port VARCHAR(100),
     photo_url TEXT,
     photo_path TEXT,
+    description TEXT,
     info_source VARCHAR(100),
     updated_at TIMESTAMP,
-    vessel_key VARCHAR(32) UNIQUE
+    vessel_key VARCHAR(32)
 );
 
 CREATE INDEX IF NOT EXISTS idx_vessels_name ON vessels(name);
@@ -38,10 +39,12 @@ CREATE TABLE IF NOT EXISTS source_priority (
 );
 
 INSERT INTO source_priority (source_name, priority, description) VALUES
-    ('marinetraffic.org', 1, 'Основной источник - самая полная база данных судов'),
+    ('marinetraffic.org', 1, 'Основной источник - самая полная база данных судов (250,000+ судов)'),
     ('maritime-database.com', 2, 'Общая база данных судов'),
-    ('vesselfinder.com', 3, 'Детальные данные и фотографии'),
-    ('myshiptracking.com', 4, 'Дополнительные данные и фотографии')
+    ('vesselfinder.com', 3, 'Наиболее детальные данные, фотографии судов'),
+    ('myshiptracking.com', 4, 'Дополнительные данные и фотографии судов'),
+    ('marinetraffic.com', 5, 'Резервный источник'),
+    ('fleetmon.com', 6, 'Дополнительный источник')
 ON CONFLICT (source_name) DO NOTHING;
 
 -- Таблица для хранения состояния скрапера
@@ -56,3 +59,18 @@ CREATE TABLE IF NOT EXISTS scraper_state (
 );
 
 ALTER TABLE scraper_state ADD COLUMN IF NOT EXISTS scraper_name VARCHAR(100);
+ALTER TABLE scraper_state ADD COLUMN IF NOT EXISTS mode VARCHAR(20);
+ALTER TABLE scraper_state ADD COLUMN IF NOT EXISTS last_page INTEGER;
+ALTER TABLE scraper_state ADD COLUMN IF NOT EXISTS vessels_count INTEGER;
+ALTER TABLE scraper_state ADD COLUMN IF NOT EXISTS last_run_at TIMESTAMP;
+
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1
+        FROM pg_constraint
+        WHERE conname = 'vessels_mmsi_unique'
+    ) THEN
+        ALTER TABLE vessels ADD CONSTRAINT vessels_mmsi_unique UNIQUE (mmsi);
+    END IF;
+END $$;

@@ -23,7 +23,11 @@ from datetime import datetime
 import config
 import requests
 from bs4 import BeautifulSoup
-from common.db import get_db_conn, load_scraper_state, save_scraper_state
+from common.db import (
+    get_db_conn,
+    load_scraper_state,
+    save_scraper_state as persist_scraper_state,
+)
 from common.logging_utils import log_event
 from common.metrics import RuntimeMetrics
 from common.normalize import parse_int
@@ -75,7 +79,7 @@ def save_scraper_state(mode, last_page, vessels_count):
     """
     conn = get_db_conn(config.DB_NAME, config.DB_USER, config.DB_PASSWORD, config.DB_HOST, config.DB_PORT)
     try:
-        save_scraper_state(conn, "vesselfinder", mode, last_page, vessels_count)
+        persist_scraper_state(conn, "vesselfinder", mode, last_page, vessels_count)
         logging.info(
             f"Состояние сохранено: режим '{mode}', страница {last_page}, судов {vessels_count}"
         )

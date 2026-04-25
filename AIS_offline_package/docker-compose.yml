@@ -15,7 +15,7 @@ services:
       - ./data/postgres:/var/lib/postgresql/data
       - ./init.sql:/docker-entrypoint-initdb.d/init.sql
   vessel_api:
-    build: ./vessel_api
+    image: ais-vessel_api
     depends_on:
       - db
     env_file: .env
@@ -30,7 +30,7 @@ services:
     volumes:
       - ./data/vessel_images:/app/images:ro
   vesselfinder_scraper:
-    build: ./vesselfinder_scraper
+    image: ais-vesselfinder_scraper
     depends_on:
       - db
     env_file: .env
@@ -44,7 +44,7 @@ services:
     volumes:
       - ./data/vessel_images:/app/images
   vessel_frontend:
-    build: ./vessel_frontend
+    image: ais-vessel_frontend
     depends_on:
       - vessel_api
     env_file: .env

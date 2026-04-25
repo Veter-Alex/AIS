@@ -84,32 +84,36 @@ def get_existing_mmsi_in_sqlite(sqlite_conn):
     return existing_mmsi
 
 
-def get_vessels_from_postgres(postgres_conn):
-    """Получить все судна из PostgreSQL для синхронизации."""
-    cursor = postgres_conn.cursor(cursor_factory=RealDictCursor)
-    cursor.execute(
-        """
-        SELECT 
-            mmsi, 
-            imo, 
-            name, 
-            flag, 
-            call_sign,
-            general_type,
-            year_built,
-            length,
-            width,
-            dwt,
-            gt,
-            detailed_type
-        FROM vessels
-        WHERE mmsi IS NOT NULL
-        ORDER BY mmsi
-    """
-    )
-    vessels = cursor.fetchall()
-    cursor.close()
-    return vessels
+def iter_vessels_from_postgres(postgres_conn, batch_size=1000):
+    """Итерировать суда из PostgreSQL батчами для снижения потребления памяти."""
+    with postgres_conn.cursor(name="vessels_sync_cursor", cursor_factory=RealDictCursor) as cursor:
+        cursor.itersize = batch_size
+        cursor.execute(
+            """
+            SELECT 
+                mmsi, 
+                imo, 
+                name, 
+                flag, 
+                call_sign,
+                general_type,
+                year_built,
+                length,
+                width,
+                dwt,
+                gt,
+                detailed_type
+            FROM vessels
+            WHERE mmsi IS NOT NULL
+            ORDER BY mmsi
+            """
+        )
+        while True:
+            rows = cursor.fetchmany(batch_size)
+            if not rows:
+                break
+            for row in rows:
+                yield row
 
 
 def insert_vessel_to_sqlite(sqlite_conn, vessel):
@@ -148,7 +152,7 @@ def insert_vessel_to_sqlite(sqlite_conn, vessel):
         return False
 
 
-def sync_databases(dry_run=False):
+def sync_databases(dry_run=False, batch_size=1000):
     """Основная функция синхронизации PostgreSQL -> SQLite.
 
     Параметры:
@@ -167,50 +171,55 @@ def sync_databases(dry_run=False):
         postgres_conn = connect_postgres()
         sqlite_conn = connect_sqlite()
 
+        # Блокируем SQLite на запись, чтобы избежать параллельных гонок sync-процессов.
+        sqlite_conn.execute("BEGIN IMMEDIATE")
+
         # Получить существующие MMSI в SQLite
         print("📊 Анализ существующих MMSI в SQLite...")
         existing_mmsi = get_existing_mmsi_in_sqlite(sqlite_conn)
         print(f"   Найдено {len(existing_mmsi)} записей в SQLite")
 
-        # Получить все судна из PostgreSQL
-        print("📊 Загрузка данных из PostgreSQL...")
-        vessels = get_vessels_from_postgres(postgres_conn)
-        print(f"   Найдено {len(vessels)} записей в PostgreSQL")
-
-        # Фильтровать только новые записи
-        new_vessels = [v for v in vessels if v["mmsi"] not in existing_mmsi]
-        print(f"   Из них {len(new_vessels)} новых записей для добавления")
-        print()
-
-        if not new_vessels:
-            print("✅ Нет новых записей для добавления")
-            postgres_conn.close()
-            sqlite_conn.close()
-            return
+        print("📊 Потоковая загрузка данных из PostgreSQL...")
 
         if dry_run:
             print("🧪 DRY RUN - изменения не применяются")
+            samples = []
+            new_count = 0
+            total_count = 0
+            for vessel in iter_vessels_from_postgres(postgres_conn, batch_size=batch_size):
+                total_count += 1
+                if vessel["mmsi"] in existing_mmsi:
+                    continue
+                new_count += 1
+                if len(samples) < 5:
+                    samples.append(vessel)
+            print(f"   Всего в PostgreSQL: {total_count}")
+            print(f"   Новых для добавления: {new_count}")
             print("   Примеры первых 5 новых судов:")
-            for vessel in new_vessels[:5]:
+            for vessel in samples:
                 print(
                     f"   - MMSI: {vessel['mmsi']}, Имя: {vessel['name']}, Флаг: {vessel['flag']}"
                 )
-            print(f"   ... и ещё {len(new_vessels) - 5} записей")
+            print(f"   ... и ещё {max(new_count - len(samples), 0)} записей")
         else:
-            print(f"💾 Добавление {len(new_vessels)} новых записей в SQLite...")
-
+            print("💾 Добавление новых записей в SQLite...")
+            total_count = 0
             added_count = 0
             failed_count = 0
 
-            for i, vessel in enumerate(new_vessels, 1):
+            for vessel in iter_vessels_from_postgres(postgres_conn, batch_size=batch_size):
+                total_count += 1
+                if vessel["mmsi"] in existing_mmsi:
+                    continue
                 if insert_vessel_to_sqlite(sqlite_conn, vessel):
                     added_count += 1
+                    existing_mmsi.add(vessel["mmsi"])
                 else:
                     failed_count += 1
 
-                if i % 1000 == 0:
+                if total_count % 1000 == 0:
                     print(
-                        f"   Обработано {i}/{len(new_vessels)} ({i * 100 // len(new_vessels)}%)"
+                        f"   Проверено {total_count} записей, добавлено {added_count}"
                     )
 
             # Фиксируем пакетную синхронизацию одной транзакцией,
@@ -219,6 +228,7 @@ def sync_databases(dry_run=False):
 
             print()
             print(f"✅ Завершено:")
+            print(f"   Проверено: {total_count}")
             print(f"   ✓ Добавлено: {added_count}")
             print(f"   ✗ Ошибок: {failed_count}")
 
@@ -265,6 +275,12 @@ if __name__ == "__main__":
         default=None,
         help="Пароль PostgreSQL (по умолчанию из POSTGRES_PASSWORD)",
     )
+    parser.add_argument(
+        "--batch-size",
+        type=int,
+        default=1000,
+        help="Размер батча чтения из PostgreSQL (по умолчанию 1000)",
+    )
 
     args = parser.parse_args()
 
@@ -284,7 +300,7 @@ if __name__ == "__main__":
     print()
 
     try:
-        sync_databases(dry_run=args.dry_run)
+        sync_databases(dry_run=args.dry_run, batch_size=max(args.batch_size, 100))
         print()
         print(
             f"✨ Синхронизация завершена в {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"

@@ -1,6 +1,6 @@
-requests
-beautifulsoup4
-psycopg2-binary
-selenium>=4.6.0
-webdriver-manager
-Pillow
+requests==2.31.0
+beautifulsoup4==4.12.2
+psycopg2-binary==2.9.9
+selenium==4.24.0
+webdriver-manager==4.0.2
+Pillow==10.1.0

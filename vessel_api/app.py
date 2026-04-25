@@ -14,9 +14,11 @@
 
 import csv
 import json
+import logging
 import os
 from datetime import datetime
-from io import BytesIO
+from io import BytesIO, StringIO
+from pathlib import Path
 from typing import List, Optional
 
 from fastapi import FastAPI, HTTPException, Query
@@ -27,6 +29,13 @@ from pydantic import BaseModel
 from db import get_db_cursor
 
 app = FastAPI()
+IMAGES_BASE_DIR = Path("/app/images").resolve()
+logger = logging.getLogger(__name__)
+
+
+def _raise_internal_error(exc: Exception, context: str) -> None:
+    logger.exception("%s: %s", context, exc)
+    raise HTTPException(status_code=500, detail="Internal server error")
 
 # CORS для frontend.
 # Управляется через CORS_ALLOW_ORIGINS:
@@ -234,7 +243,7 @@ def get_vessels(
             "vessels": vessels,
         }
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        _raise_internal_error(e, "get_vessels")
 
 
 @app.get("/vessels/{imo}", response_model=Vessel)
@@ -284,7 +293,7 @@ def get_vessel_by_imo(imo: str):
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        _raise_internal_error(e, "get_vessel_by_imo")
 
 
 @app.patch("/vessels/{imo}", response_model=Vessel)
@@ -388,7 +397,7 @@ def update_vessel(imo: str, vessel_update: VesselUpdate):
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        _raise_internal_error(e, "update_vessel")
 
 
 @app.get("/vessels/stats/summary", response_model=StatsResponse)
@@ -436,7 +445,7 @@ def get_stats():
             "flags": flags,
         }
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        _raise_internal_error(e, "get_stats")
 
 
 @app.get("/vessels/stats/sources")
@@ -458,7 +467,7 @@ def get_sources():
 
         return {"sources": sources}
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        _raise_internal_error(e, "get_sources")
 
 
 @app.get("/vessels/export/{format}")
@@ -524,7 +533,7 @@ def export_vessels(
             vessels = cur.fetchall()
 
         if format.lower() == "csv":
-            output = BytesIO()
+            output = StringIO()
             writer = csv.DictWriter(
                 output,
                 fieldnames=vessels[0].keys() if vessels else [],
@@ -533,9 +542,9 @@ def export_vessels(
             writer.writeheader()
             for vessel in vessels:
                 writer.writerow(vessel)
-            output.seek(0)
+            csv_bytes = output.getvalue().encode("utf-8")
             return StreamingResponse(
-                output,
+                BytesIO(csv_bytes),
                 media_type="text/csv",
                 headers={"Content-Disposition": "attachment; filename=vessels.csv"},
             )
@@ -557,16 +566,18 @@ def export_vessels(
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        _raise_internal_error(e, "export_vessels")
 
 
 @app.get("/images/{filename}")
 def get_image(filename: str):
     """Отдать фото судна из локального каталога изображений."""
-    image_path = f"/app/images/{filename}"
-    if not os.path.exists(image_path):
+    candidate = (IMAGES_BASE_DIR / filename).resolve()
+    if IMAGES_BASE_DIR not in candidate.parents and candidate != IMAGES_BASE_DIR:
+        raise HTTPException(status_code=400, detail="Invalid image path")
+    if not candidate.is_file():
         raise HTTPException(status_code=404, detail="Image not found")
-    return FileResponse(image_path)
+    return FileResponse(str(candidate))
 
 
 @app.post("/vessels/")
@@ -608,4 +619,4 @@ def add_vessel(vessel: Vessel):
             )
         return {"status": "success"}
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        _raise_internal_error(e, "add_vessel")

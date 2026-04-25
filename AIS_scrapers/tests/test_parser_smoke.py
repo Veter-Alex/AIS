@@ -67,3 +67,11 @@ def test_vesselfinder_golden(monkeypatch):
     assert vessel["mmsi"] == "477642800"
     assert vessel["year_built"] == 2016
 
+
+def test_vesselfinder_handles_broken_html(monkeypatch):
+    module = _load_scraper("vesselfinder_scraper_broken", "vesselfinder")
+    monkeypatch.setattr(module, "get_html_with_selenium", lambda *_args, **_kwargs: "<html><body>broken</body></html>")
+    monkeypatch.setattr(module, "download_image", lambda *_args, **_kwargs: None)
+    vessel = module.parse_vessel("https://example.com/broken")
+    assert vessel is not None
+    assert vessel["mmsi"] is None

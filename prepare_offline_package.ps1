@@ -5,7 +5,8 @@ $ErrorActionPreference = "Stop"
 
 # 1. Configuration
 $projectRoot = $PSScriptRoot
-$packageDir = Join-Path $projectRoot "AIS_offline_package"
+$packageDir = Join-Path $projectRoot "AIS_offline_package_dist"
+$offlineTemplateDir = Join-Path $projectRoot "AIS_offline_package"
 
 Write-Host "=== Offline Package Preparation ===" -ForegroundColor Cyan
 Write-Host "Project: $projectRoot" -ForegroundColor Yellow
@@ -85,20 +86,20 @@ foreach ($item in $dataItems) {
 Write-Host "`n=== Copying Essential Files ===" -ForegroundColor Cyan
 
 $essentialFiles = @(
-    "docker-compose.yml",
-    "init.sql",
-    ".env"
+    @{Source = (Join-Path $offlineTemplateDir "docker-compose.yml"); Dest = "docker-compose.yml"},
+    @{Source = (Join-Path $offlineTemplateDir "init.sql"); Dest = "init.sql"},
+    @{Source = (Join-Path $projectRoot ".env"); Dest = ".env"}
 )
 
 foreach ($file in $essentialFiles) {
-    $srcFile = Join-Path $projectRoot $file
-    $dstFile = Join-Path $packageDir $file
+    $srcFile = $file.Source
+    $dstFile = Join-Path $packageDir $file.Dest
     
     if (Test-Path $srcFile) {
         Copy-Item -Path $srcFile -Destination $dstFile -Force
-        Write-Host "Copied: $file" -ForegroundColor Green
+        Write-Host "Copied: $($file.Dest)" -ForegroundColor Green
     } else {
-        Write-Host "Warning: $file not found" -ForegroundColor Yellow
+        Write-Host "Warning: $($file.Source) not found" -ForegroundColor Yellow
     }
 }
 
@@ -185,7 +186,7 @@ docker compose up -d
 
 This will start:
 - PostgreSQL database (port 5432)
-- Vessel API backend (port 8001)
+- Vessel API backend (port 8000)
 - Vessel frontend (port 3000)
 - VesselFinder scraper (background)
 
@@ -205,7 +206,7 @@ This will start:
 ## Service Details
 
 - **Frontend**: React + TypeScript + Vite (http://localhost:3000)
-- **Backend API**: FastAPI (http://localhost:8001)
+- **Backend API**: FastAPI (http://localhost:8000)
 - **Database**: PostgreSQL 15 (port 5432)
 - **Scraper**: Selenium + BeautifulSoup (background service)
 
@@ -233,7 +234,7 @@ docker compose restart vessel_api  # Restart specific service
 ### Port Conflicts
 If ports are already in use, edit docker-compose.yml:
 - Frontend: change "3000:80"
-- API: change "8001:8001"
+- API: change "8000:8000"
 - Database: change "5432:5432"
 
 ### Database Issues

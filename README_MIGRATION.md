@@ -19,7 +19,7 @@ E:\Programming\Projects\Python\AIS\
 
 ### 1. Остановить контейнеры
 ```powershell
-docker-compose down
+docker compose down
 ```
 
 ### 2. Архивировать данные
@@ -77,16 +77,16 @@ docker load -i docker_images/api.tar
 
 ### 4. Запустить контейнеры
 ```powershell
-docker-compose up -d
+docker compose up -d
 ```
 
 ### 5. Проверить работу
 ```powershell
 # Проверить количество записей
-docker-compose exec db psql -U user -d vessels_db -c "SELECT COUNT(*) FROM vessels;"
+docker compose exec db psql -U user -d vessels_db -c "SELECT COUNT(*) FROM vessels;"
 
 # Проверить примеры записей
-docker-compose exec db psql -U user -d vessels_db -c "SELECT name, imo, length, width FROM vessels LIMIT 3;"
+docker compose exec db psql -U user -d vessels_db -c "SELECT name, imo, length, width FROM vessels LIMIT 3;"
 
 # Проверить изображения
 Get-ChildItem data/vessel_images
@@ -97,7 +97,7 @@ Get-ChildItem data/vessel_images
 ### Подключение к БД
 ```powershell
 # Через psql в контейнере
-docker-compose exec db psql -U user -d vessels_db
+docker compose exec db psql -U user -d vessels_db
 
 # Через pgAdmin или другие GUI инструменты:
 # Host: localhost
@@ -110,23 +110,23 @@ docker-compose exec db psql -U user -d vessels_db
 ### Экспорт данных в SQL
 ```powershell
 # Экспорт всей БД
-docker-compose exec db pg_dump -U user vessels_db > vessels_backup.sql
+docker compose exec db pg_dump -U user vessels_db > vessels_backup.sql
 
 # Экспорт только структуры
-docker-compose exec db pg_dump -U user --schema-only vessels_db > vessels_schema.sql
+docker compose exec db pg_dump -U user --schema-only vessels_db > vessels_schema.sql
 
 # Экспорт только данных
-docker-compose exec db pg_dump -U user --data-only vessels_db > vessels_data.sql
+docker compose exec db pg_dump -U user --data-only vessels_db > vessels_data.sql
 ```
 
 ### Экспорт данных в CSV
 ```powershell
-# Через docker-compose exec
-docker-compose exec db psql -U user -d vessels_db -c "\COPY vessels TO '/tmp/vessels.csv' WITH CSV HEADER"
+# Через docker compose exec
+docker compose exec db psql -U user -d vessels_db -c "\COPY vessels TO '/tmp/vessels.csv' WITH CSV HEADER"
 docker cp ais-db-1:/tmp/vessels.csv ./vessels_export.csv
 
 # Или напрямую из psql:
-docker-compose exec db psql -U user -d vessels_db
+docker compose exec db psql -U user -d vessels_db
 \COPY vessels TO '/tmp/vessels.csv' WITH CSV HEADER
 ```
 
@@ -138,7 +138,7 @@ docker-compose exec db psql -U user -d vessels_db
 $date = Get-Date -Format "yyyy-MM-dd_HHmmss"
 $backupFile = "backups/vessels_$date.sql"
 New-Item -ItemType Directory -Force -Path backups
-docker-compose exec -T db pg_dump -U user vessels_db > $backupFile
+docker compose exec -T db pg_dump -U user vessels_db > $backupFile
 Write-Host "Backup created: $backupFile"
 
 # Запланировать через Task Scheduler для регулярного выполнения
@@ -147,9 +147,9 @@ Write-Host "Backup created: $backupFile"
 ### Ручное копирование папки data/
 ```powershell
 # Простейший способ - копирование папки целиком (контейнеры должны быть остановлены)
-docker-compose down
+docker compose down
 Copy-Item -Path data -Destination "D:\Backups\AIS_$(Get-Date -Format 'yyyy-MM-dd')" -Recurse
-docker-compose up -d
+docker compose up -d
 ```
 
 ## Размер данных

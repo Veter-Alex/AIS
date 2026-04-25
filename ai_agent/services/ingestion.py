@@ -575,6 +575,7 @@ def run_ingestion(
                 query += " LIMIT %s"
                 params.append(limit)
 
+            with conn.cursor(cursor_factory=RealDictCursor) as cur:
                 cur.execute(query, params)
                 vessels = cur.fetchall()
 
@@ -608,81 +609,81 @@ def run_ingestion(
                         "info_source": _clean(vessel.get("info_source")),
                     }
 
-                # Upsert документа в ai.documents.
-                cur.execute(
-                    """
-                    INSERT INTO ai.documents(source_table, source_pk, title, metadata, updated_at)
-                    VALUES ('vessels', %s, %s, %s, NOW())
-                    ON CONFLICT (source_table, source_pk)
-                    DO UPDATE SET
-                        title = EXCLUDED.title,
-                        metadata = EXCLUDED.metadata,
-                        updated_at = NOW()
-                    RETURNING id
-                    """,
-                    (source_pk, title, Json(metadata)),
-                )
-                document_id = cur.fetchone()["id"]
-                documents_upserted += 1
+                    # Upsert документа в ai.documents.
+                    cur.execute(
+                        """
+                        INSERT INTO ai.documents(source_table, source_pk, title, metadata, updated_at)
+                        VALUES ('vessels', %s, %s, %s, NOW())
+                        ON CONFLICT (source_table, source_pk)
+                        DO UPDATE SET
+                            title = EXCLUDED.title,
+                            metadata = EXCLUDED.metadata,
+                            updated_at = NOW()
+                        RETURNING id
+                        """,
+                        (source_pk, title, Json(metadata)),
+                    )
+                    document_id = cur.fetchone()["id"]
+                    documents_upserted += 1
 
-                # Чтобы не копить мусор и дубликаты,
-                # перед вставкой новых chunks удаляем старые для этого документа.
-                cur.execute(
-                    "DELETE FROM ai.chunks WHERE document_id = %s", (document_id,)
-                )
+                    # Чтобы не копить мусор и дубликаты,
+                    # перед вставкой новых chunks удаляем старые для этого документа.
+                    cur.execute(
+                        "DELETE FROM ai.chunks WHERE document_id = %s", (document_id,)
+                    )
 
-                chunks = split_into_chunks(profile_text)
-                for idx, chunk in enumerate(chunks):
-                    chunk_vec = build_embedding(chunk)
-                    vec_literal = _vector_literal(chunk_vec)
-                    if has_vector_col:
-                        cur.execute(
-                            """
-                            INSERT INTO ai.chunks(
-                                document_id,
-                                chunk_index,
-                                content,
-                                token_count,
-                                embedding,
-                                embedding_vec,
-                                metadata
+                    chunks = split_into_chunks(profile_text)
+                    for idx, chunk in enumerate(chunks):
+                        chunk_vec = build_embedding(chunk)
+                        vec_literal = _vector_literal(chunk_vec)
+                        if has_vector_col:
+                            cur.execute(
+                                """
+                                INSERT INTO ai.chunks(
+                                    document_id,
+                                    chunk_index,
+                                    content,
+                                    token_count,
+                                    embedding,
+                                    embedding_vec,
+                                    metadata
+                                )
+                                VALUES (%s, %s, %s, %s, %s, %s::vector, %s)
+                                """,
+                                (
+                                    document_id,
+                                    idx,
+                                    chunk,
+                                    len(chunk.split()),
+                                    chunk_vec,
+                                    vec_literal,
+                                    Json({"source": "vessels", "source_pk": source_pk}),
+                                ),
                             )
-                            VALUES (%s, %s, %s, %s, %s, %s::vector, %s)
-                            """,
-                            (
-                                document_id,
-                                idx,
-                                chunk,
-                                len(chunk.split()),
-                                chunk_vec,
-                                vec_literal,
-                                Json({"source": "vessels", "source_pk": source_pk}),
-                            ),
-                        )
-                    else:
-                        # Режим без pgvector: сохраняем только массив embedding.
-                        cur.execute(
-                            """
-                            INSERT INTO ai.chunks(
-                                document_id,
-                                chunk_index,
-                                content,
-                                token_count,
-                                embedding,
-                                metadata
+                        else:
+                            # Режим без pgvector: сохраняем только массив embedding.
+                            cur.execute(
+                                """
+                                INSERT INTO ai.chunks(
+                                    document_id,
+                                    chunk_index,
+                                    content,
+                                    token_count,
+                                    embedding,
+                                    metadata
+                                )
+                                VALUES (%s, %s, %s, %s, %s, %s)
+                                """,
+                                (
+                                    document_id,
+                                    idx,
+                                    chunk,
+                                    len(chunk.split()),
+                                    chunk_vec,
+                                    Json({"source": "vessels", "source_pk": source_pk}),
+                                ),
                             )
-                            VALUES (%s, %s, %s, %s, %s, %s)
-                            """,
-                            (
-                                document_id,
-                                idx,
-                                chunk,
-                                len(chunk.split()),
-                                chunk_vec,
-                                Json({"source": "vessels", "source_pk": source_pk}),
-                            ),
-                        )
-                    chunks_upserted += 1
+                        chunks_upserted += 1
 
                     processed = documents_upserted
                     if processed % 100 == 0:

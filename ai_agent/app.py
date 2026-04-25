@@ -1,10 +1,12 @@
 import importlib
 import json
+import logging
 import os
+import time
 from typing import Any, Dict, List, Optional
 
 from db import get_db_cursor
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, Header, HTTPException, Request
 from fastapi.responses import JSONResponse
 from psycopg2.extras import RealDictCursor
 from pydantic import BaseModel
@@ -55,6 +57,40 @@ app = FastAPI(
     version="0.1.0",
     default_response_class=Utf8JSONResponse,
 )
+logger = logging.getLogger(__name__)
+ADMIN_API_KEY = os.getenv("ADMIN_API_KEY", "").strip()
+ADMIN_RATE_LIMIT_PER_MIN = int(os.getenv("ADMIN_RATE_LIMIT_PER_MIN", "30"))
+_ADMIN_RATE_STATE: Dict[str, List[float]] = {}
+
+
+def _raise_internal_error(exc: Exception, context: str) -> None:
+    logger.exception("%s: %s", context, exc)
+    raise HTTPException(status_code=500, detail="Internal server error")
+
+
+def _enforce_admin_security(
+    request: Request,
+    endpoint: str,
+    x_api_key: Optional[str] = None,
+    authorization: Optional[str] = None,
+) -> None:
+    if ADMIN_API_KEY:
+        bearer_token = ""
+        if authorization and authorization.lower().startswith("bearer "):
+            bearer_token = authorization.split(" ", 1)[1].strip()
+        provided_token = (x_api_key or "").strip() or bearer_token
+        if provided_token != ADMIN_API_KEY:
+            raise HTTPException(status_code=401, detail="Unauthorized")
+
+    now = time.time()
+    window_start = now - 60.0
+    client = request.client.host if request.client else "unknown"
+    key = f"{client}:{endpoint}"
+    hits = [ts for ts in _ADMIN_RATE_STATE.get(key, []) if ts >= window_start]
+    if len(hits) >= ADMIN_RATE_LIMIT_PER_MIN:
+        raise HTTPException(status_code=429, detail="Too many requests")
+    hits.append(now)
+    _ADMIN_RATE_STATE[key] = hits
 
 
 class ChatRequest(BaseModel):
@@ -565,33 +601,61 @@ def llm_models(provider: Optional[str] = None):
         llm_module = importlib.import_module("services.llm")
         return llm_module.get_llm_runtime(provider=provider)
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        _raise_internal_error(e, "llm_models")
 
 
 @app.post("/llm/pull-model", response_model=LlmPullResponse)
-def llm_pull_model(req: LlmPullRequest):
+def llm_pull_model(
+    req: LlmPullRequest,
+    request: Request,
+    x_api_key: Optional[str] = Header(default=None),
+    authorization: Optional[str] = Header(default=None),
+):
     # Загружает модель в Ollama runtime по имени.
     # Полезно для удаленного развертывания без ручного docker exec.
     try:
+        _enforce_admin_security(
+            request,
+            endpoint="llm_pull_model",
+            x_api_key=x_api_key,
+            authorization=authorization,
+        )
         llm_module = importlib.import_module("services.llm")
         return llm_module.pull_ollama_model(model=req.model)
+    except HTTPException:
+        raise
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        _raise_internal_error(e, "llm_pull_model")
 
 
 @app.delete("/llm/delete-model", response_model=LlmDeleteResponse)
-def llm_delete_model(req: LlmDeleteRequest):
+def llm_delete_model(
+    req: LlmDeleteRequest,
+    request: Request,
+    x_api_key: Optional[str] = Header(default=None),
+    authorization: Optional[str] = Header(default=None),
+):
     # Удаляет модель из Ollama runtime по имени.
     # Если модель не найдена, возвращаем 404.
     try:
+        _enforce_admin_security(
+            request,
+            endpoint="llm_delete_model",
+            x_api_key=x_api_key,
+            authorization=authorization,
+        )
         llm_module = importlib.import_module("services.llm")
         return llm_module.delete_ollama_model(model=req.model)
+    except HTTPException:
+        raise
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         status_code = getattr(e, "status_code", 500)
+        if status_code >= 500:
+            _raise_internal_error(e, "llm_delete_model")
         raise HTTPException(status_code=status_code, detail=str(e))
 
 
@@ -656,31 +720,38 @@ def chat(req: ChatRequest):
         }
 
     except Exception as e:
-        # Отдаем 500 и текст ошибки.
-        # Для production лучше логировать детали, а пользователю отдавать более нейтральное сообщение.
-        # Позже здесь стоит добавить более точечную обработку ошибок:
-        # - ошибки подключения к БД;
-        # - ошибки retrieval-пайплайна;
-        # - ошибки модели;
-        # - ошибки валидации входного вопроса.
-        raise HTTPException(status_code=500, detail=str(e))
+        # Детали остаются в логах, клиенту отдаем безопасный ответ.
+        _raise_internal_error(e, "chat")
 
 
 @app.post("/ingest/run", response_model=IngestResponse)
-def ingest_run(req: IngestRequest):
+def ingest_run(
+    req: IngestRequest,
+    request: Request,
+    x_api_key: Optional[str] = Header(default=None),
+    authorization: Optional[str] = Header(default=None),
+):
     # Ручной запуск индексации данных судов в ai-схему.
     #
     # На текущем этапе это синхронный endpoint:
     # запрос ждет, пока ingestion завершится.
     # Для больших объемов данных позже лучше вынести запуск в очередь/воркер.
     try:
+        _enforce_admin_security(
+            request,
+            endpoint="ingest_run",
+            x_api_key=x_api_key,
+            authorization=authorization,
+        )
         return run_ingestion(
             limit=req.limit,
             incremental=bool(req.incremental),
             updated_after=req.updated_after,
         )
+    except HTTPException:
+        raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        _raise_internal_error(e, "ingest_run")
 
 
 @app.get("/ingest/jobs", response_model=IngestionJobsResponse)
@@ -693,7 +764,7 @@ def ingest_jobs(limit: int = 20):
         jobs = list_ingestion_jobs(limit=limit)
         return {"total": len(jobs), "jobs": jobs}
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        _raise_internal_error(e, "ingest_jobs")
 
 
 @app.post("/retrieve/chunks", response_model=ChunkSearchResponse)
@@ -721,7 +792,7 @@ def retrieve_chunks(req: ChunkSearchRequest):
             "results": results,
         }
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        _raise_internal_error(e, "retrieve_chunks")
 
 
 @app.post("/retrieve/diagnostics", response_model=RetrievalDiagnosticsResponse)
@@ -781,7 +852,7 @@ def retrieve_diagnostics(req: RetrievalDiagnosticsRequest):
             "final": final,
         }
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        _raise_internal_error(e, "retrieve_diagnostics")
 
 
 @app.post("/rag/answer", response_model=RagAnswerResponse)
@@ -853,4 +924,4 @@ def rag_answer(req: RagAnswerRequest):
             "sources": sources,
         }
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        _raise_internal_error(e, "rag_answer")

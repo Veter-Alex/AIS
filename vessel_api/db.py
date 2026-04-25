@@ -6,6 +6,45 @@ import os
 from contextlib import contextmanager
 
 import psycopg2
+from psycopg2.pool import ThreadedConnectionPool
+
+_DB_POOL = None
+
+
+class _PooledConnection:
+    """Обертка, чтобы conn.close() возвращал соединение в пул."""
+
+    def __init__(self, pool: ThreadedConnectionPool, conn):
+        self._pool = pool
+        self._conn = conn
+        self._released = False
+
+    def __getattr__(self, item):
+        return getattr(self._conn, item)
+
+    def close(self):
+        if not self._released:
+            self._pool.putconn(self._conn)
+            self._released = True
+
+
+def _get_pool() -> ThreadedConnectionPool:
+    global _DB_POOL
+    if _DB_POOL is None:
+        min_conn = int(os.getenv("DB_POOL_MIN_CONN", "1"))
+        max_conn = int(os.getenv("DB_POOL_MAX_CONN", "10"))
+        _DB_POOL = ThreadedConnectionPool(
+            min_conn,
+            max_conn,
+            dbname=os.getenv("POSTGRES_DB", "vessels_db"),
+            user=os.getenv("POSTGRES_USER", "user"),
+            password=os.getenv("POSTGRES_PASSWORD", "password"),
+            host=os.getenv("POSTGRES_HOST", "db"),
+            port=os.getenv("POSTGRES_PORT", "5432"),
+            connect_timeout=int(os.getenv("POSTGRES_CONNECT_TIMEOUT", "5")),
+            options=f"-c statement_timeout={os.getenv('POSTGRES_STATEMENT_TIMEOUT_MS', '60000')}",
+        )
+    return _DB_POOL
 
 
 def get_db_conn():
@@ -14,13 +53,8 @@ def get_db_conn():
     Возвращает:
     - psycopg2 connection, который вызывающая сторона обязана закрыть.
     """
-    return psycopg2.connect(
-        dbname=os.getenv("POSTGRES_DB", "vessels_db"),
-        user=os.getenv("POSTGRES_USER", "user"),
-        password=os.getenv("POSTGRES_PASSWORD", "password"),
-        host=os.getenv("POSTGRES_HOST", "db"),
-        port=os.getenv("POSTGRES_PORT", "5432"),
-    )
+    pool = _get_pool()
+    return _PooledConnection(pool, pool.getconn())
 
 
 @contextmanager
