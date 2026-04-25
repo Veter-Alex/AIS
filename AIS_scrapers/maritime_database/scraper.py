@@ -29,7 +29,9 @@ import psycopg2
 import requests
 from bs4 import BeautifulSoup
 from common.http import fetch_page_with_retry
+from common.logging_utils import log_event
 from common.metrics import RuntimeMetrics
+from common.normalize import parse_int
 from common.schema import validate_scraper_schema
 from common.upsert import source_priority_sql
 from PIL import Image
@@ -341,12 +343,10 @@ def parse_vessel_list_page(html):
                         "name": vessel_name,
                         "general_type": vessel_type,
                         "year_built": (
-                            int(year_built)
-                            if year_built and year_built.isdigit()
-                            else None
+                            parse_int(year_built, min_digits=4) if year_built else None
                         ),
-                        "gt": int(gt) if gt and gt.isdigit() else None,
-                        "dwt": int(dwt) if dwt and dwt.isdigit() else None,
+                        "gt": parse_int(gt, min_digits=2) if gt else None,
+                        "dwt": parse_int(dwt, min_digits=2) if dwt else None,
                         "dimensions": dimensions,
                     }
                 )
@@ -440,17 +440,17 @@ def parse_vessel_detail_page(html, vessel_data):
     # Извлечь валовую вместимость
     gross = extract_field(r"Gross[:\s]*(\d+)")
     if gross:
-        vessel_data["gt"] = int(gross)
+        vessel_data["gt"] = parse_int(gross, min_digits=2)
 
     # Извлечь DWT летом
     summer_dwt = extract_field(r"Summer\s+DWT[:\s]*(\d+)")
     if summer_dwt:
-        vessel_data["dwt"] = int(summer_dwt)
+        vessel_data["dwt"] = parse_int(summer_dwt, min_digits=2)
 
     # Извлечь год постройки
     year_built = extract_field(r"Year\s+Built[:\s]*(\d{4})")
     if year_built:
-        vessel_data["year_built"] = int(year_built)
+        vessel_data["year_built"] = parse_int(year_built, min_digits=4)
 
     # Извлечь описание из секции Description
     description = extract_field(
@@ -543,6 +543,13 @@ def process_vessel(vessel_data):
         if detail_html:
             vessel_data = parse_vessel_detail_page(detail_html, vessel_data)
             if save_vessel(vessel_data):
+                log_event(
+                    logging.getLogger(__name__),
+                    "vessel_saved",
+                    scraper="maritime_database",
+                    mmsi=vessel_data.get("mmsi"),
+                    name=vessel_data.get("name"),
+                )
                 return True
     except Exception as e:
         logging.error(f"Error processing vessel {vessel_data.get('url')}: {e}")
@@ -620,6 +627,13 @@ def main():
 
             vessels = parse_vessel_list_page(html)
             metrics.pages_ok += 1
+            log_event(
+                logging.getLogger(__name__),
+                "page_processed",
+                scraper="maritime_database",
+                page=current_page,
+                vessels_found=len(vessels),
+            )
             if not vessels:
                 logging.info("No more vessels found")
                 break

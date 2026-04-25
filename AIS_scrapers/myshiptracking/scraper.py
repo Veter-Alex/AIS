@@ -25,7 +25,9 @@ import psycopg2
 import requests
 from bs4 import BeautifulSoup
 from common.http import fetch_page_with_retry
+from common.logging_utils import log_event
 from common.metrics import RuntimeMetrics
+from common.normalize import parse_int
 from common.schema import validate_scraper_schema
 from common.upsert import source_priority_sql
 from PIL import Image
@@ -404,7 +406,7 @@ def parse_vessel_detail_page(html, vessel_data):
     if not year_built:
         year_built = extract_field(r"(?:Year\s*Built|Build)[:\s]+(\d{4})")
     if year_built:
-        vessel_data["year_built"] = int(year_built)
+        vessel_data["year_built"] = parse_int(year_built, min_digits=4)
 
     # Извлечь размеры (формат: Size | 183 x 32 m)
     size_match = re.search(r"Size\s*\|\s*(\d+)\s*x\s*(\d+)", text, re.IGNORECASE)
@@ -415,16 +417,12 @@ def parse_vessel_detail_page(html, vessel_data):
     # Извлечь DWT (формат: DWT | 46,219 Tons)
     dwt = extract_field(r"DWT\s*\|\s*([\d,]+)")
     if dwt:
-        dwt_clean = dwt.replace(",", "")
-        if dwt_clean.isdigit():
-            vessel_data["dwt"] = int(dwt_clean)
+        vessel_data["dwt"] = parse_int(dwt, min_digits=3)
 
     # Извлечь GT (формат: GT | 30,024 Tons)
     gt = extract_field(r"GT\s*\|\s*([\d,]+)")
     if gt:
-        gt_clean = gt.replace(",", "")
-        if gt_clean.isdigit():
-            vessel_data["gt"] = int(gt_clean)
+        vessel_data["gt"] = parse_int(gt, min_digits=3)
 
     # Извлечь тип из подзаголовка (например "Oil/Chemical Tanker")
     detailed_type = None
@@ -503,6 +501,13 @@ def process_vessel(vessel_data):
                 vessel_data = parse_vessel_detail_page(detail_html, vessel_data)
 
         if save_vessel(vessel_data):
+            log_event(
+                logging.getLogger(__name__),
+                "vessel_saved",
+                scraper="myshiptracking",
+                mmsi=vessel_data.get("mmsi"),
+                name=vessel_data.get("name"),
+            )
             return True
     except Exception as e:
         logging.error(f"Error processing vessel {vessel_data.get('name')}: {e}")
@@ -604,6 +609,13 @@ def main():
 
             vessels = parse_vessel_list_page(html)
             metrics.pages_ok += 1
+            log_event(
+                logging.getLogger(__name__),
+                "page_processed",
+                scraper="myshiptracking",
+                page=current_page,
+                vessels_found=len(vessels),
+            )
             if not vessels:
                 logging.info("No more vessels found")
                 break

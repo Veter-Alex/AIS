@@ -29,7 +29,9 @@ from bs4 import BeautifulSoup
 from PIL import Image
 from common.db import get_db_conn, load_scraper_state, save_scraper_state
 from common.http import fetch_page_with_retry
+from common.logging_utils import log_event
 from common.metrics import RuntimeMetrics
+from common.normalize import parse_int
 from common.schema import validate_scraper_schema
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -231,27 +233,21 @@ def parse_vessel_detail_page(html):
                         # Извлечь только год
                         year_match = re.search(r"(\d{4})", value)
                         if year_match:
-                            data["year_built"] = int(year_match.group(1))
+                            data["year_built"] = parse_int(year_match.group(1), min_digits=4)
                     elif "Length" in label:
                         # Формат: "399 m / 1309 ft"
                         meter_match = re.search(r"(\d+)\s*m", value)
                         if meter_match:
-                            data["length"] = int(meter_match.group(1))
+                            data["length"] = parse_int(meter_match.group(1))
                     elif "Beam" in label:
                         # Формат: "60 m / 197 ft"
                         meter_match = re.search(r"(\d+)\s*m", value)
                         if meter_match:
-                            data["width"] = int(meter_match.group(1))
+                            data["width"] = parse_int(meter_match.group(1))
                     elif "Gross Tonnage" in label:
-                        # Убрать запятые, пробелы
-                        gt_clean = re.sub(r"[^\d]", "", value)
-                        if gt_clean:
-                            data["gt"] = int(gt_clean)
+                        data["gt"] = parse_int(value)
                     elif "DWT" in label and "Summer" in label:
-                        # Формат: "Summer DWT: 281456"
-                        dwt_clean = re.sub(r"[^\d]", "", value)
-                        if dwt_clean:
-                            data["dwt"] = int(dwt_clean)
+                        data["dwt"] = parse_int(value)
 
         # Попробовать найти фото судна
         # MarineTraffic может иметь изображение в <img> с определёнными классами
@@ -428,6 +424,13 @@ def process_vessel(vessel_basic, db_settings, metrics):
     try:
         # Сохранить в БД
         if save_vessel_to_db(vessel_data, conn):
+            log_event(
+                logging.getLogger(__name__),
+                "vessel_saved",
+                scraper=config.DATA_SOURCE,
+                mmsi=vessel_data.get("mmsi"),
+                name=vessel_data.get("name"),
+            )
             logging.info(
                 f"Saved vessel: {vessel_data.get('name')} (MMSI: {vessel_data.get('mmsi')})"
             )
@@ -585,6 +588,13 @@ def main():
 
             vessels_on_page = parse_vessel_list_page(html)
             metrics.pages_ok += 1
+            log_event(
+                logging.getLogger(__name__),
+                "page_processed",
+                scraper=config.DATA_SOURCE,
+                page=current_page,
+                vessels_found=len(vessels_on_page),
+            )
 
             if not vessels_on_page:
                 logging.warning(f"No vessels found on page {current_page}, stopping")

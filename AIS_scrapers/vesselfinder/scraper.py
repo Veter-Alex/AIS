@@ -24,7 +24,9 @@ import config
 import requests
 from bs4 import BeautifulSoup
 from common.db import get_db_conn, load_scraper_state, save_scraper_state
+from common.logging_utils import log_event
 from common.metrics import RuntimeMetrics
+from common.normalize import parse_int
 from common.schema import validate_scraper_schema
 from common.upsert import source_priority_sql
 from PIL import Image
@@ -427,12 +429,6 @@ def parse_vessel(url):
             if m:
                 vessel["mmsi"] = m.group(1)
 
-        def to_int(val):
-            if val is None:
-                return None
-            mnum = re.search(r"\d+", str(val).replace(",", ""))
-            return int(mnum.group()) if mnum else None
-
         logging.info(
             f"RAW metrics: length_raw={vessel.get('length')} width_raw={vessel.get('width')} gt_raw={vessel.get('gt')} dwt_raw={vessel.get('dwt')} year_raw={vessel.get('year_built')}"
         )
@@ -445,11 +441,11 @@ def parse_vessel(url):
             vessel["gt"] = rx(r"Gross Tonnage[^0-9]*(\d+)")
         # Не используем fallback на одиночную цифру после Deadweight, чтобы избежать ложных '3'
 
-        vessel["year_built"] = to_int(vessel.get("year_built"))
-        vessel["length"] = to_int(vessel.get("length"))
-        vessel["width"] = to_int(vessel.get("width"))
-        vessel["dwt"] = to_int(vessel.get("dwt"))
-        vessel["gt"] = to_int(vessel.get("gt"))
+        vessel["year_built"] = parse_int(vessel.get("year_built"), min_digits=4)
+        vessel["length"] = parse_int(vessel.get("length"))
+        vessel["width"] = parse_int(vessel.get("width"))
+        vessel["dwt"] = parse_int(vessel.get("dwt"))
+        vessel["gt"] = parse_int(vessel.get("gt"))
 
         img = soup.find("img", class_="main-photo")
         vessel["photo_url"] = img["src"] if img and img.get("src") else None
@@ -528,6 +524,13 @@ def main():
                 save_scraper_state(mode, page, count)
                 break
             metrics.pages_ok += 1
+            log_event(
+                logging.getLogger(__name__),
+                "page_processed",
+                scraper="vesselfinder",
+                page=page,
+                vessels_found=len(links),
+            )
 
             for link in links:
                 # Проверка лимита судов
@@ -545,6 +548,13 @@ def main():
                         save_to_db(vessel)
                         count += 1
                         metrics.vessels_saved += 1
+                        log_event(
+                            logging.getLogger(__name__),
+                            "vessel_saved",
+                            scraper="vesselfinder",
+                            mmsi=vessel.get("mmsi"),
+                            name=vessel.get("name"),
+                        )
                 except Exception as exc:
                     logging.error(f"Ошибка обработки судна {link}: {exc}")
 
