@@ -57,6 +57,21 @@ def normalize_mmsi(raw):
     return None
 
 
+def normalize_vessel_name(raw):
+    """Очистить имя судна от служебных хвостов IMO/MMSI."""
+    if raw is None:
+        return None
+    name = str(raw).strip()
+    if not name:
+        return None
+
+    # На некоторых карточках в текст имени прилипают фрагменты вида
+    # "IMO: 1234567" / "MMSI: 123456789" без разделителей.
+    name = re.sub(r"(?:IMO|MMSI)\s*:?\s*\d+", "", name, flags=re.IGNORECASE)
+    name = re.sub(r"\s+", " ", name).strip(" -,:;/")
+    return name or None
+
+
 def download_image(photo_url, vessel_key):
     """Скачать изображение судна, сжать и сохранить.
 
@@ -155,7 +170,9 @@ def parse_vessel_list_page(html):
             if not name_link:
                 continue
 
-            name = name_link.get_text(strip=True)
+            name = normalize_vessel_name(name_link.get_text(strip=True))
+            if not name:
+                continue
             detail_url = name_link.get("href", "")
 
             if detail_url and not detail_url.startswith("http"):
@@ -223,7 +240,7 @@ def parse_vessel_detail_page(html):
             # Формат: "MSC MARIELLA Container Ship, IMO 9934747"
             match = re.match(r"(.+?)\s+(.*?),\s*IMO\s+(\d+)", title_text)
             if match:
-                data["name"] = match.group(1).strip()
+                data["name"] = normalize_vessel_name(match.group(1))
                 data["general_type"] = match.group(2).strip()
                 data["imo"] = match.group(3).strip()
 

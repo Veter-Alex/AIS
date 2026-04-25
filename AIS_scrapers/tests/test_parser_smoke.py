@@ -54,6 +54,14 @@ def test_marinetraffic_detail_spaced_mmsi_normalized():
     assert detail["mmsi"] == "477642800"
 
 
+def test_marinetraffic_name_cleanup():
+    module = _load_scraper("marinetraffic_name_cleanup", "marinetraffic")
+    assert module.normalize_vessel_name("BLUEIMO: 9862231MMSI: 319239400") == "BLUE"
+    rows = module.parse_vessel_list_page(_read_fixture("marinetraffic_list_bad_name.html"))
+    assert len(rows) == 1
+    assert rows[0]["name"] == "BLUE"
+
+
 def test_myshiptracking_golden():
     module = _load_scraper("myshiptracking_scraper", "myshiptracking")
     list_rows = module.parse_vessel_list_page(_read_fixture("myshiptracking_list.html"))
