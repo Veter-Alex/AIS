@@ -19,19 +19,31 @@ from datetime import datetime
 from io import BytesIO
 from typing import List, Optional
 
-import psycopg2
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, StreamingResponse
 from psycopg2.extras import RealDictCursor
 from pydantic import BaseModel
+from db import get_db_cursor
 
 app = FastAPI()
 
-# CORS для frontend
+# CORS для frontend.
+# Управляется через CORS_ALLOW_ORIGINS:
+# - "*" для полного открытия;
+# - "http://localhost:3000,http://127.0.0.1:3000" для списка origin.
+cors_origins_env = os.getenv(
+    "CORS_ALLOW_ORIGINS", "http://localhost:3000,http://127.0.0.1:3000"
+)
+allow_origins = (
+    ["*"]
+    if cors_origins_env.strip() == "*"
+    else [origin.strip() for origin in cors_origins_env.split(",") if origin.strip()]
+)
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=allow_origins or ["http://localhost:3000"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -89,21 +101,6 @@ class StatsResponse(BaseModel):
     flags: List[dict]
 
 
-def get_db_conn():
-    """Создать подключение к PostgreSQL.
-
-    Возвращает:
-    - psycopg2 connection, который вызывающая сторона обязана закрыть.
-    """
-    return psycopg2.connect(
-        dbname=os.getenv("POSTGRES_DB", "vessels_db"),
-        user=os.getenv("POSTGRES_USER", "user"),
-        password=os.getenv("POSTGRES_PASSWORD", "password"),
-        host=os.getenv("POSTGRES_HOST", "db"),
-        port=os.getenv("POSTGRES_PORT", "5432"),
-    )
-
-
 @app.get("/vessels/", response_model=VesselListResponse)
 def get_vessels(
     page: int = Query(1, ge=1),
@@ -130,9 +127,6 @@ def get_vessels(
     - объект с total/page/per_page/vessels.
     """
     try:
-        conn = get_db_conn()
-        cur = conn.cursor(cursor_factory=RealDictCursor)
-
         # Базовый запрос
         where_clauses = []
         params = []
@@ -174,12 +168,6 @@ def get_vessels(
 
         where_clause = " AND ".join(where_clauses) if where_clauses else "1=1"
 
-        # Подсчет общего количества
-        cur.execute(
-            f"SELECT COUNT(*) as total FROM vessels WHERE {where_clause}", params
-        )
-        total = cur.fetchone()["total"]
-
         # Сортировка
         allowed_sort_fields = [
             "name",
@@ -200,7 +188,6 @@ def get_vessels(
             sort_by = "name"
         sort_direction = "DESC" if sort_order.lower() == "desc" else "ASC"
 
-        # Запрос с пагинацией (COALESCE для обязательных строковых полей)
         offset = (page - 1) * per_page
         query = f"""
             SELECT 
@@ -227,12 +214,17 @@ def get_vessels(
             ORDER BY {sort_by} {sort_direction}
             LIMIT %s OFFSET %s
         """
-        params.extend([per_page, offset])
-        cur.execute(query, params)
-        vessels = cur.fetchall()
+        count_params = list(params)
+        query_params = list(params) + [per_page, offset]
 
-        cur.close()
-        conn.close()
+        with get_db_cursor(cursor_factory=RealDictCursor) as cur:
+            # Подсчет общего количества
+            cur.execute(
+                f"SELECT COUNT(*) as total FROM vessels WHERE {where_clause}", count_params
+            )
+            total = cur.fetchone()["total"]
+            cur.execute(query, query_params)
+            vessels = cur.fetchall()
 
         # COALESCE в запросе уже гарантирует отсутствие NULL в обязательных строках
         return {
@@ -256,10 +248,9 @@ def get_vessel_by_imo(imo: str):
     - 404, если запись не найдена.
     """
     try:
-        conn = get_db_conn()
-        cur = conn.cursor(cursor_factory=RealDictCursor)
-        cur.execute(
-            """
+        with get_db_cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute(
+                """
             SELECT 
                 id,
                 COALESCE(TRIM(name),'') AS name,
@@ -282,11 +273,9 @@ def get_vessel_by_imo(imo: str):
             FROM vessels
             WHERE imo = %s OR mmsi = %s
             """,
-            (imo, imo),
-        )
-        vessel = cur.fetchone()
-        cur.close()
-        conn.close()
+                (imo, imo),
+            )
+            vessel = cur.fetchone()
 
         if not vessel:
             raise HTTPException(status_code=404, detail="Vessel not found")
@@ -308,16 +297,6 @@ def update_vessel(imo: str, vessel_update: VesselUpdate):
     - поиск записи выполняется по IMO или MMSI.
     """
     try:
-        conn = get_db_conn()
-        cur = conn.cursor(cursor_factory=RealDictCursor)
-
-        # Проверяем существование судна
-        cur.execute("SELECT id FROM vessels WHERE imo = %s OR mmsi = %s", (imo, imo))
-        if not cur.fetchone():
-            cur.close()
-            conn.close()
-            raise HTTPException(status_code=404, detail="Vessel not found")
-
         # Строим динамический UPDATE запрос
         update_fields = []
         params = []
@@ -397,11 +376,13 @@ def update_vessel(imo: str, vessel_update: VesselUpdate):
                 updated_at
         """
 
-        cur.execute(query, params)
-        updated_vessel = cur.fetchone()
-        conn.commit()
-        cur.close()
-        conn.close()
+        with get_db_cursor(cursor_factory=RealDictCursor, commit=True) as cur:
+            # Проверяем существование судна
+            cur.execute("SELECT id FROM vessels WHERE imo = %s OR mmsi = %s", (imo, imo))
+            if not cur.fetchone():
+                raise HTTPException(status_code=404, detail="Vessel not found")
+            cur.execute(query, params)
+            updated_vessel = cur.fetchone()
 
         return updated_vessel
     except HTTPException:
@@ -420,38 +401,34 @@ def get_stats():
     - распределение по flag.
     """
     try:
-        conn = get_db_conn()
-        cur = conn.cursor(cursor_factory=RealDictCursor)
+        with get_db_cursor(cursor_factory=RealDictCursor) as cur:
 
-        # Общее количество
-        cur.execute("SELECT COUNT(*) as total FROM vessels")
-        total = cur.fetchone()["total"]
+            # Общее количество
+            cur.execute("SELECT COUNT(*) as total FROM vessels")
+            total = cur.fetchone()["total"]
 
-        # Статистика по типам
-        cur.execute(
-            """
+            # Статистика по типам
+            cur.execute(
+                """
             SELECT general_type, COUNT(*) as count
             FROM vessels
             WHERE general_type IS NOT NULL
             GROUP BY general_type
             ORDER BY count DESC
         """
-        )
-        vessel_types = cur.fetchall()
+            )
+            vessel_types = cur.fetchall()
 
-        # Статистика по флагам
-        cur.execute(
-            """
+            # Статистика по флагам
+            cur.execute(
+                """
             SELECT flag, COUNT(*) as count
             FROM vessels
             GROUP BY flag
             ORDER BY count DESC
         """
-        )
-        flags = cur.fetchall()
-
-        cur.close()
-        conn.close()
+            )
+            flags = cur.fetchall()
 
         return {
             "total_vessels": total,
@@ -466,22 +443,18 @@ def get_stats():
 def get_sources():
     """Получить список источников данных с количеством судов."""
     try:
-        conn = get_db_conn()
-        cur = conn.cursor(cursor_factory=RealDictCursor)
+        with get_db_cursor(cursor_factory=RealDictCursor) as cur:
 
-        cur.execute(
-            """
+            cur.execute(
+                """
             SELECT info_source, COUNT(*) as count
             FROM vessels
             WHERE info_source IS NOT NULL
             GROUP BY info_source
             ORDER BY count DESC
         """
-        )
-        sources = cur.fetchall()
-
-        cur.close()
-        conn.close()
+            )
+            sources = cur.fetchall()
 
         return {"sources": sources}
     except Exception as e:
@@ -509,9 +482,6 @@ def export_vessels(
       чтобы выгрузка соответствовала текущему состоянию UI.
     """
     try:
-        conn = get_db_conn()
-        cur = conn.cursor(cursor_factory=RealDictCursor)
-
         # Те же фильтры, что и в get_vessels
         where_clauses = []
         params = []
@@ -547,12 +517,11 @@ def export_vessels(
             params.append(year_to)
 
         where_clause = " AND ".join(where_clauses) if where_clauses else "1=1"
-
         query = f"SELECT * FROM vessels WHERE {where_clause}"
-        cur.execute(query, params)
-        vessels = cur.fetchall()
-        cur.close()
-        conn.close()
+
+        with get_db_cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute(query, params)
+            vessels = cur.fetchall()
 
         if format.lower() == "csv":
             output = BytesIO()
@@ -609,38 +578,34 @@ def add_vessel(vessel: Vessel):
       чтобы уменьшить дубликаты из-за разных форматов источников.
     """
     try:
-        conn = get_db_conn()
-        cur = conn.cursor()
-        name_clean = " ".join(vessel.name.split())  # сжатие множественных пробелов
-        cur.execute(
-            """
+        with get_db_cursor(commit=True) as cur:
+            name_clean = " ".join(vessel.name.split())  # сжатие множественных пробелов
+            cur.execute(
+                """
                 INSERT INTO vessels (
                     name, imo, mmsi, call_sign, general_type, detailed_type, flag, year_built, length, width, dwt, gt, home_port, photo_path, description, info_source, updated_at
                 ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 """,
-            (
-                name_clean,
-                vessel.imo,
-                vessel.mmsi,
-                vessel.call_sign,
-                vessel.general_type,
-                vessel.detailed_type,
-                vessel.flag,
-                vessel.year_built,
-                vessel.length,
-                vessel.width,
-                vessel.dwt,
-                vessel.gt,
-                vessel.home_port,
-                vessel.photo_path,
-                vessel.description,
-                vessel.info_source,
-                vessel.updated_at or datetime.utcnow(),
-            ),
-        )
-        conn.commit()
-        cur.close()
-        conn.close()
+                (
+                    name_clean,
+                    vessel.imo,
+                    vessel.mmsi,
+                    vessel.call_sign,
+                    vessel.general_type,
+                    vessel.detailed_type,
+                    vessel.flag,
+                    vessel.year_built,
+                    vessel.length,
+                    vessel.width,
+                    vessel.dwt,
+                    vessel.gt,
+                    vessel.home_port,
+                    vessel.photo_path,
+                    vessel.description,
+                    vessel.info_source,
+                    vessel.updated_at or datetime.utcnow(),
+                ),
+            )
         return {"status": "success"}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))

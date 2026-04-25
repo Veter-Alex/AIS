@@ -13,6 +13,7 @@
 """
 
 import argparse
+import os
 import sqlite3
 from datetime import datetime
 from pathlib import Path
@@ -20,22 +21,26 @@ from pathlib import Path
 import psycopg2
 from psycopg2.extras import RealDictCursor
 
-# Конфигурация подключений
-POSTGRES_CONFIG = {
-    "host": "localhost",
-    "port": 5432,
-    "database": "vessels_db",
-    "user": "user",
-    "password": "password",
-}
+def _build_postgres_config():
+    """Собрать конфиг PostgreSQL из переменных окружения."""
+    return {
+        "host": os.getenv("POSTGRES_HOST", "localhost"),
+        "port": int(os.getenv("POSTGRES_PORT", "5432")),
+        "database": os.getenv("POSTGRES_DB", "vessels_db"),
+        "user": os.getenv("POSTGRES_USER", "user"),
+        "password": os.getenv("POSTGRES_PASSWORD", ""),
+    }
 
-# Путь к SQLite БД (относительный путь от скрипта)
-SQLITE_DB_PATH = (
-    Path(__file__).parent.parent
-    / "База Данных PKS"
-    / "ShipsDataBase"
-    / "ships_database.sqb"
+
+POSTGRES_CONFIG = _build_postgres_config()
+
+# Путь к SQLite БД:
+# - через SQLITE_DB_PATH, если задан;
+# - иначе относительный путь от скрипта.
+DEFAULT_SQLITE_DB_PATH = (
+    Path(__file__).parent.parent / "База Данных PKS" / "ShipsDataBase" / "ships_database.sqb"
 )
+SQLITE_DB_PATH = Path(os.getenv("SQLITE_DB_PATH", str(DEFAULT_SQLITE_DB_PATH)))
 
 
 def connect_postgres():
@@ -236,41 +241,44 @@ if __name__ == "__main__":
     )
     parser.add_argument(
         "--host",
-        default=POSTGRES_CONFIG["host"],
-        help=f"Host PostgreSQL (по умолчанию: {POSTGRES_CONFIG['host']})",
+        default=None,
+        help="Host PostgreSQL (по умолчанию из POSTGRES_HOST или localhost)",
     )
     parser.add_argument(
         "--port",
         type=int,
-        default=POSTGRES_CONFIG["port"],
-        help=f"Порт PostgreSQL (по умолчанию: {POSTGRES_CONFIG['port']})",
+        default=None,
+        help="Порт PostgreSQL (по умолчанию из POSTGRES_PORT или 5432)",
     )
     parser.add_argument(
         "--db",
-        default=POSTGRES_CONFIG["database"],
-        help=f"Имя БД (по умолчанию: {POSTGRES_CONFIG['database']})",
+        default=None,
+        help="Имя БД (по умолчанию из POSTGRES_DB или vessels_db)",
     )
     parser.add_argument(
         "--user",
-        default=POSTGRES_CONFIG["user"],
-        help=f"Пользователь PostgreSQL (по умолчанию: {POSTGRES_CONFIG['user']})",
+        default=None,
+        help="Пользователь PostgreSQL (по умолчанию из POSTGRES_USER или user)",
     )
     parser.add_argument(
-        "--password", default=POSTGRES_CONFIG["password"], help="Пароль PostgreSQL"
+        "--password",
+        default=None,
+        help="Пароль PostgreSQL (по умолчанию из POSTGRES_PASSWORD)",
     )
 
     args = parser.parse_args()
 
     # Обновить конфиг из аргументов
-    POSTGRES_CONFIG.update(
-        {
-            "host": args.host,
-            "port": args.port,
-            "database": args.db,
-            "user": args.user,
-            "password": args.password,
-        }
-    )
+    if args.host:
+        POSTGRES_CONFIG["host"] = args.host
+    if args.port:
+        POSTGRES_CONFIG["port"] = args.port
+    if args.db:
+        POSTGRES_CONFIG["database"] = args.db
+    if args.user:
+        POSTGRES_CONFIG["user"] = args.user
+    if args.password is not None:
+        POSTGRES_CONFIG["password"] = args.password
 
     print(f"🚀 Начало синхронизации в {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     print()
@@ -283,5 +291,4 @@ if __name__ == "__main__":
         )
     except Exception as e:
         print(f"❌ Синхронизация не удалась")
-        exit(1)
         exit(1)
