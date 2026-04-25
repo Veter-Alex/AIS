@@ -32,6 +32,28 @@ def test_marinetraffic_golden():
     assert detail["dwt"] == 281456
 
 
+def test_marinetraffic_normalize_mmsi():
+    module = _load_scraper("marinetraffic_norm", "marinetraffic")
+    assert module.normalize_mmsi("477642800") == "477642800"
+    assert module.normalize_mmsi("477 642 800") == "477642800"
+    assert module.normalize_mmsi("MMSI: 477642800") == "477642800"
+    assert module.normalize_mmsi("1") is None
+    assert module.normalize_mmsi("") is None
+    assert module.normalize_mmsi(None) is None
+
+
+def test_marinetraffic_detail_invalid_mmsi_not_stored():
+    module = _load_scraper("marinetraffic_bad_mmsi", "marinetraffic")
+    detail = module.parse_vessel_detail_page(_read_fixture("marinetraffic_detail_bad_mmsi.html"))
+    assert detail.get("mmsi") is None
+
+
+def test_marinetraffic_detail_spaced_mmsi_normalized():
+    module = _load_scraper("marinetraffic_spaced", "marinetraffic")
+    detail = module.parse_vessel_detail_page(_read_fixture("marinetraffic_detail_mmsi_spaced.html"))
+    assert detail["mmsi"] == "477642800"
+
+
 def test_myshiptracking_golden():
     module = _load_scraper("myshiptracking_scraper", "myshiptracking")
     list_rows = module.parse_vessel_list_page(_read_fixture("myshiptracking_list.html"))

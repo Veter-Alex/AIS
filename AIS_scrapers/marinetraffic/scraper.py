@@ -40,6 +40,23 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(mess
 session = requests.Session()
 
 
+def normalize_mmsi(raw):
+    """Привести MMSI к виду ровно 9 цифр или вернуть None.
+
+    Отбрасывает нецифровые символы (пробелы, «MMSI:» и т.д.).
+    Некорректные значения (например одна цифра «1» с верстки) отклоняются.
+    """
+    if raw is None:
+        return None
+    text = str(raw).strip()
+    if not text:
+        return None
+    digits = re.sub(r"\D", "", text)
+    if len(digits) == 9:
+        return digits
+    return None
+
+
 def download_image(photo_url, vessel_key):
     """Скачать изображение судна, сжать и сохранить.
 
@@ -226,7 +243,9 @@ def parse_vessel_detail_page(html):
                     value = cols[1].get_text(strip=True)
 
                     if "MMSI" in label:
-                        data["mmsi"] = value
+                        cand = normalize_mmsi(value)
+                        if cand:
+                            data["mmsi"] = cand
                     elif "Flag" in label:
                         data["flag"] = value
                     elif "Built" in label:
@@ -396,10 +415,17 @@ def process_vessel(vessel_basic, db_settings, metrics):
     if not vessel_data.get("general_type"):
         vessel_data["general_type"] = vessel_basic.get("general_type")
 
-    # Проверить наличие MMSI
-    if not vessel_data.get("mmsi"):
-        logging.warning(f"Vessel {vessel_data.get('name')} has no MMSI, skipping")
+    mmsi = normalize_mmsi(vessel_data.get("mmsi"))
+    if not mmsi:
+        logging.warning(
+            "Пропуск судна: невалидный или отсутствующий MMSI name=%s imo=%s raw_mmsi=%r url=%s",
+            vessel_data.get("name"),
+            vessel_data.get("imo"),
+            vessel_data.get("mmsi"),
+            detail_url,
+        )
         return
+    vessel_data["mmsi"] = mmsi
 
     # Скачать фото, если есть
     photo_url = vessel_data.get("photo_url")
