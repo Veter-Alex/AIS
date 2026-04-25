@@ -28,6 +28,10 @@ import config
 import psycopg2
 import requests
 from bs4 import BeautifulSoup
+from common.http import fetch_page_with_retry
+from common.metrics import RuntimeMetrics
+from common.schema import validate_scraper_schema
+from common.upsert import source_priority_sql
 from PIL import Image
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -212,9 +216,11 @@ def save_vessel(vessel):
 
     conn = get_db_conn()
     cur = conn.cursor()
+    incoming_prio = source_priority_sql("EXCLUDED.info_source")
+    existing_prio = source_priority_sql("vessels.info_source")
     try:
         cur.execute(
-            """
+            f"""
             INSERT INTO vessels (
                 name, imo, mmsi, call_sign, general_type, detailed_type, flag, 
                 year_built, length, width, dwt, gt, home_port, photo_url, photo_path,
@@ -239,7 +245,7 @@ def save_vessel(vessel):
                 photo_path=COALESCE(EXCLUDED.photo_path, vessels.photo_path),
                 description=COALESCE(EXCLUDED.description, vessels.description),
                 info_source=CASE 
-                    WHEN vessels.info_source = 'vesselfinder.com' THEN vessels.info_source
+                    WHEN {existing_prio} <= {incoming_prio} THEN vessels.info_source
                     ELSE EXCLUDED.info_source
                 END,
                 updated_at=NOW(),
@@ -290,21 +296,14 @@ def fetch_page(url, retries=0):
     Возвращает:
     - Текст HTML или None при неудаче после `config.MAX_RETRIES`.
     """
-    headers = {"User-Agent": random.choice(config.USER_AGENTS)}
-
-    try:
-        # Использовать глобальный объект сессии
-        response = session.get(url, headers=headers, timeout=config.REQUEST_TIMEOUT)
-        response.raise_for_status()
-        return response.text
-    except Exception as e:
-        if retries < config.MAX_RETRIES:
-            delay = config.RETRY_BASE_DELAY * (2**retries)
-            logging.warning(f"Error fetching {url}: {e}. Retrying in {delay}s...")
-            time.sleep(delay)
-            return fetch_page(url, retries + 1)
-        logging.error(f"Failed to fetch {url} after {config.MAX_RETRIES} retries")
-        return None
+    return fetch_page_with_retry(
+        session=session,
+        url=url,
+        user_agents=config.USER_AGENTS,
+        timeout=config.REQUEST_TIMEOUT,
+        max_retries=config.MAX_RETRIES,
+        retry_base_delay=config.RETRY_BASE_DELAY,
+    )
 
 
 def parse_vessel_list_page(html):
@@ -538,7 +537,7 @@ def process_vessel(vessel_data):
     """
     try:
         # Небольшая случайная задержка для предотвращения одновременных запросов от всех потоков
-        time.sleep(random.uniform(0.5, 1.5))
+        time.sleep(random.uniform(config.DETAIL_DELAY_MIN, config.DETAIL_DELAY_MAX))
 
         detail_html = fetch_page(vessel_data["url"])
         if detail_html:
@@ -557,7 +556,13 @@ def main():
     Использует сохранение состояния для продолжения работы с нужной страницы.
     """
     mode = os.getenv("SCRAPER_MODE", "test")
+    metrics = RuntimeMetrics()
     logging.info(f"Maritime Database Scraper started, mode: {mode}")
+    preflight_conn = get_db_conn()
+    try:
+        validate_scraper_schema(preflight_conn)
+    finally:
+        preflight_conn.close()
 
     # Загрузить состояние
     start_page, vessels_processed = get_scraper_state(mode)
@@ -610,9 +615,11 @@ def main():
             html = fetch_page(url)
             if not html:
                 logging.error(f"Failed to fetch page {current_page}")
+                metrics.pages_failed += 1
                 break
 
             vessels = parse_vessel_list_page(html)
+            metrics.pages_ok += 1
             if not vessels:
                 logging.info("No more vessels found")
                 break
@@ -630,9 +637,12 @@ def main():
                     futures.append(executor.submit(process_vessel, vessel_data))
 
                 for future in as_completed(futures):
-                    if future.result():
+                    result = bool(future.result())
+                    metrics.vessels_parsed += 1
+                    if result:
                         total_saved += 1
                         vessels_processed += 1
+                        metrics.vessels_saved += 1
 
             # Сохранить состояние после каждой страницы
             save_scraper_state(mode, current_page, vessels_processed)
@@ -661,6 +671,7 @@ def main():
         logging.info(
             f"Scraper finished. Total saved: {total_saved}, total processed: {vessels_processed}"
         )
+        logging.info(f"Runtime metrics: {metrics.snapshot()}")
 
 
 if __name__ == "__main__":

@@ -21,9 +21,12 @@ import time
 from datetime import datetime
 
 import config
-import psycopg2
 import requests
 from bs4 import BeautifulSoup
+from common.db import get_db_conn, load_scraper_state, save_scraper_state
+from common.metrics import RuntimeMetrics
+from common.schema import validate_scraper_schema
+from common.upsert import source_priority_sql
 from PIL import Image
 from selenium import webdriver
 from selenium.common.exceptions import TimeoutException, WebDriverException
@@ -33,28 +36,6 @@ from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.support.ui import WebDriverWait
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
-
-
-def get_db_conn():
-    """Создать подключение к PostgreSQL.
-
-    Параметры:
-    - отсутствуют (используются ENV/`config.py`).
-
-    Возвращает:
-    - объект соединения `psycopg2.connect`.
-
-    Побочные эффекты:
-    - открывает новое соединение, которое обязан закрыть вызывающий код.
-    """
-    # Подключение к БД берётся из ENV (Docker) с fallback на локальный config.
-    return psycopg2.connect(
-        dbname=os.getenv("POSTGRES_DB", config.DB_NAME),
-        user=os.getenv("POSTGRES_USER", config.DB_USER),
-        password=os.getenv("POSTGRES_PASSWORD", config.DB_PASSWORD),
-        host=os.getenv("POSTGRES_HOST", config.DB_HOST),
-        port=os.getenv("POSTGRES_PORT", config.DB_PORT),
-    )
 
 
 def get_scraper_state(mode):
@@ -67,24 +48,15 @@ def get_scraper_state(mode):
     - кортеж `(last_page, vessels_count)`;
     - `(1, 0)`, если состояние для режима отсутствует.
     """
-    conn = get_db_conn()
-    cur = conn.cursor()
+    conn = get_db_conn(config.DB_NAME, config.DB_USER, config.DB_PASSWORD, config.DB_HOST, config.DB_PORT)
     try:
-        cur.execute(
-            "SELECT last_page, vessels_count FROM scraper_state WHERE scraper_name = %s AND mode = %s",
-            ("vesselfinder", mode),
-        )
-        result = cur.fetchone()
-        if result:
-            last_page, vessels_count = result
-            logging.info(
-                f"Загружено состояние для режима '{mode}': страница {last_page}, судов {vessels_count}"
-            )
+        last_page, vessels_count = load_scraper_state(conn, "vesselfinder", mode)
+        if last_page != 1 or vessels_count != 0:
+            logging.info(f"Загружено состояние для режима '{mode}': страница {last_page}, судов {vessels_count}")
             return last_page, vessels_count
         logging.info(f"Состояние для режима '{mode}' не найдено, начинаем с начала")
         return 1, 0
     finally:
-        cur.close()
         conn.close()
 
 
@@ -99,26 +71,13 @@ def save_scraper_state(mode, last_page, vessels_count):
     Побочные эффекты:
     - выполняет upsert и commit в БД.
     """
-    conn = get_db_conn()
-    cur = conn.cursor()
+    conn = get_db_conn(config.DB_NAME, config.DB_USER, config.DB_PASSWORD, config.DB_HOST, config.DB_PORT)
     try:
-        cur.execute(
-            """
-            INSERT INTO scraper_state (scraper_name, mode, last_page, vessels_count, last_run_at)
-            VALUES (%s, %s, %s, %s, NOW())
-            ON CONFLICT (scraper_name, mode) DO UPDATE SET
-                last_page = EXCLUDED.last_page,
-                vessels_count = EXCLUDED.vessels_count,
-                last_run_at = EXCLUDED.last_run_at
-            """,
-            ("vesselfinder", mode, last_page, vessels_count),
-        )
-        conn.commit()
+        save_scraper_state(conn, "vesselfinder", mode, last_page, vessels_count)
         logging.info(
             f"Состояние сохранено: режим '{mode}', страница {last_page}, судов {vessels_count}"
         )
     finally:
-        cur.close()
         conn.close()
 
 
@@ -182,7 +141,7 @@ def save_to_db(vessel):
     - выполняет commit транзакции;
     - пишет подробные события в лог.
     """
-    conn = get_db_conn()
+    conn = get_db_conn(config.DB_NAME, config.DB_USER, config.DB_PASSWORD, config.DB_HOST, config.DB_PORT)
     cur = conn.cursor()
     imo = vessel.get("imo")
     mmsi = vessel.get("mmsi")
@@ -193,7 +152,9 @@ def save_to_db(vessel):
         conn.close()
         return
 
-    sql = """
+    incoming_prio = source_priority_sql("%s")
+    existing_prio = source_priority_sql("vessels.info_source")
+    sql = f"""
     INSERT INTO vessels (
         name, imo, mmsi, call_sign, general_type, detailed_type, flag, year_built, length, width, dwt, gt, home_port, photo_url, photo_path, description, info_source, updated_at, vessel_key
     ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,NOW(),%s)
@@ -214,8 +175,7 @@ def save_to_db(vessel):
         photo_path=COALESCE(EXCLUDED.photo_path, vessels.photo_path),
         description=COALESCE(EXCLUDED.description, vessels.description),
         info_source=CASE 
-            WHEN (SELECT priority FROM source_priority WHERE source_name = vessels.info_source) <= 
-                 (SELECT priority FROM source_priority WHERE source_name = %s)
+            WHEN {existing_prio} <= {incoming_prio}
             THEN vessels.info_source
             ELSE %s
         END,
@@ -223,9 +183,10 @@ def save_to_db(vessel):
         vessel_key=COALESCE(EXCLUDED.vessel_key, vessels.vessel_key);
     """
     source_name = "vesselfinder.com"
-    cur.execute(
-        sql,
-        (
+    try:
+        cur.execute(
+            sql,
+            (
             (vessel.get("name") or "").strip() or None,
             imo,
             mmsi,
@@ -244,14 +205,18 @@ def save_to_db(vessel):
             vessel.get("description"),
             source_name,  # info_source в INSERT
             vessel.get("vessel_key"),
-            source_name,  # info_source для CASE WHEN в UPDATE
-            source_name,
-        ),
-    )
-    conn.commit()
-    cur.close()
-    conn.close()
-    logging.info(f"UPSERT выполнен: mmsi={mmsi}")
+                source_name,  # info_source для CASE WHEN в UPDATE
+                source_name,
+            ),
+        )
+        conn.commit()
+        logging.info(f"UPSERT выполнен: mmsi={mmsi}")
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        cur.close()
+        conn.close()
 
 
 def get_html_with_selenium(url, user_agent, retries=0):
@@ -328,11 +293,8 @@ def get_html_with_selenium(url, user_agent, retries=0):
             random.uniform(config.DOM_STABILIZATION_MIN, config.DOM_STABILIZATION_MAX)
         )
         html = driver.page_source
-        driver.quit()
         return html
     except WebDriverException as e:
-        if driver:
-            driver.quit()
         if retries < config.MAX_RETRIES:
             wait = config.RETRY_BASE_DELAY**retries
             logging.warning(f"WebDriver ошибка, повтор через {wait}s")
@@ -340,6 +302,9 @@ def get_html_with_selenium(url, user_agent, retries=0):
             return get_html_with_selenium(url, user_agent, retries + 1)
         logging.error(f"WebDriver окончательная ошибка: {e}")
         return None
+    finally:
+        if driver:
+            driver.quit()
 
 
 def get_vessel_links(page=1, vessel_type=None):
@@ -514,7 +479,13 @@ def main():
     - сохранение изображений на диск.
     """
     mode = os.getenv("SCRAPER_MODE", "test")
+    metrics = RuntimeMetrics()
     logging.info(f"main() started, режим: {mode}")
+    schema_conn = get_db_conn(config.DB_NAME, config.DB_USER, config.DB_PASSWORD, config.DB_HOST, config.DB_PORT)
+    try:
+        validate_scraper_schema(schema_conn)
+    finally:
+        schema_conn.close()
 
     # Загружаем сохраненное состояние
     start_page, saved_count = get_scraper_state(mode)
@@ -541,55 +512,67 @@ def main():
     if vessel_type:
         logging.info(f"Фильтр по типу судов: {vessel_type}")
 
-    while True:
-        # Проверка лимита страниц
-        if max_pages and page > max_pages:
-            logging.info(f"Достигнут лимит страниц: {max_pages}")
-            save_scraper_state(mode, page, count)
-            break
-
-        logging.info(f"Парсинг страницы {page}")
-        links = get_vessel_links(page, vessel_type)
-
-        if not links:
-            logging.info("Нет больше судов для парсинга")
-            save_scraper_state(mode, page, count)
-            break
-
-        for link in links:
-            # Проверка лимита судов
-            if max_vessels and count >= max_vessels:
-                logging.info(f"Достигнут лимит судов: {max_vessels}")
+    try:
+        while True:
+            # Проверка лимита страниц
+            if max_pages and page > max_pages:
+                logging.info(f"Достигнут лимит страниц: {max_pages}")
                 save_scraper_state(mode, page, count)
-                logging.info("main() finished")
-                return
+                break
 
-            logging.info(f"Парсинг судна: {link}")
-            vessel = parse_vessel(link)
-            if vessel:
-                save_to_db(vessel)
-                count += 1
+            logging.info(f"Парсинг страницы {page}")
+            links = get_vessel_links(page, vessel_type)
+
+            if not links:
+                logging.info("Нет больше судов для парсинга")
+                save_scraper_state(mode, page, count)
+                break
+            metrics.pages_ok += 1
+
+            for link in links:
+                # Проверка лимита судов
+                if max_vessels and count >= max_vessels:
+                    logging.info(f"Достигнут лимит судов: {max_vessels}")
+                    save_scraper_state(mode, page, count)
+                    logging.info("main() finished")
+                    return
+
+                logging.info(f"Парсинг судна: {link}")
+                try:
+                    vessel = parse_vessel(link)
+                    metrics.vessels_parsed += 1
+                    if vessel:
+                        save_to_db(vessel)
+                        count += 1
+                        metrics.vessels_saved += 1
+                except Exception as exc:
+                    logging.error(f"Ошибка обработки судна {link}: {exc}")
 
             delay = random.uniform(config.DETAIL_DELAY_MIN, config.DETAIL_DELAY_MAX)
             logging.info(f"Задержка {delay:.1f} сек")
             time.sleep(delay)
 
-        # Сохраняем состояние после каждой страницы
-        save_scraper_state(mode, page + 1, count)
-        page += 1
+            # Сохраняем состояние после каждой страницы
+            save_scraper_state(mode, page + 1, count)
+            page += 1
 
-        # Периодический перерыв для снижения риска блокировки
-        if page % config.BREAK_AFTER_PAGES == 0:
-            break_time = random.uniform(
-                config.BREAK_DURATION_MIN, config.BREAK_DURATION_MAX
-            )
-            logging.info(
-                f"Перерыв {break_time:.0f} сек после {config.BREAK_AFTER_PAGES} страниц..."
-            )
-            time.sleep(break_time)
-
-    save_scraper_state(mode, page, count)
-    logging.info(f"main() finished, обработано судов: {count}")
+            # Периодический перерыв для снижения риска блокировки
+            if page % config.BREAK_AFTER_PAGES == 0:
+                break_time = random.uniform(
+                    config.BREAK_DURATION_MIN, config.BREAK_DURATION_MAX
+                )
+                logging.info(
+                    f"Перерыв {break_time:.0f} сек после {config.BREAK_AFTER_PAGES} страниц..."
+                )
+                time.sleep(break_time)
+    except Exception as exc:
+        logging.error(f"Критическая ошибка main(): {exc}")
+        metrics.pages_failed += 1
+        raise
+    finally:
+        save_scraper_state(mode, page, count)
+        logging.info(f"main() finished, обработано судов: {count}")
+        logging.info(f"Runtime metrics: {metrics.snapshot()}")
 
 
 if __name__ == "__main__":

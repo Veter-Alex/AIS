@@ -24,6 +24,10 @@ import config
 import psycopg2
 import requests
 from bs4 import BeautifulSoup
+from common.http import fetch_page_with_retry
+from common.metrics import RuntimeMetrics
+from common.schema import validate_scraper_schema
+from common.upsert import source_priority_sql
 from PIL import Image
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -179,9 +183,11 @@ def save_vessel(vessel):
 
     conn = get_db_conn()
     cur = conn.cursor()
+    incoming_prio = source_priority_sql("EXCLUDED.info_source")
+    existing_prio = source_priority_sql("vessels.info_source")
     try:
         cur.execute(
-            """
+            f"""
             INSERT INTO vessels (
                 name, imo, mmsi, call_sign, general_type, detailed_type, flag, 
                 year_built, length, width, dwt, gt, home_port, photo_url, photo_path,
@@ -206,7 +212,7 @@ def save_vessel(vessel):
                 photo_path=COALESCE(EXCLUDED.photo_path, vessels.photo_path),
                 description=COALESCE(EXCLUDED.description, vessels.description),
                 info_source=CASE 
-                    WHEN vessels.info_source = 'vesselfinder.com' THEN vessels.info_source
+                    WHEN {existing_prio} <= {incoming_prio} THEN vessels.info_source
                     ELSE EXCLUDED.info_source
                 END,
                 updated_at=NOW(),
@@ -258,35 +264,15 @@ def fetch_page(url, retries=0):
     - Текст HTML или None при неудаче после `config.MAX_RETRIES`.
     - Специальное значение "404_NOT_FOUND" при ошибке 404 (для пропуска страницы).
     """
-    headers = {"User-Agent": random.choice(config.USER_AGENTS)}
-
-    try:
-        response = session.get(url, headers=headers, timeout=config.REQUEST_TIMEOUT)
-        response.raise_for_status()
-        return response.text
-    except requests.exceptions.HTTPError as e:
-        # Если 404 — пропустить эту страницу и перейти на следующую
-        if e.response.status_code == 404:
-            logging.warning(f"Page not found (404): {url}")
-            return "404_NOT_FOUND"
-        # Для других HTTP ошибок — повторить
-        if retries < config.MAX_RETRIES:
-            delay = config.RETRY_BASE_DELAY * (2**retries)
-            logging.warning(
-                f"HTTP Error {e.response.status_code} for {url}: {e}. Retrying in {delay}s..."
-            )
-            time.sleep(delay)
-            return fetch_page(url, retries + 1)
-        logging.error(f"Failed to fetch {url} after {config.MAX_RETRIES} retries")
-        return None
-    except Exception as e:
-        if retries < config.MAX_RETRIES:
-            delay = config.RETRY_BASE_DELAY * (2**retries)
-            logging.warning(f"Error fetching {url}: {e}. Retrying in {delay}s...")
-            time.sleep(delay)
-            return fetch_page(url, retries + 1)
-        logging.error(f"Failed to fetch {url} after {config.MAX_RETRIES} retries")
-        return None
+    return fetch_page_with_retry(
+        session=session,
+        url=url,
+        user_agents=config.USER_AGENTS,
+        timeout=config.REQUEST_TIMEOUT,
+        max_retries=config.MAX_RETRIES,
+        retry_base_delay=config.RETRY_BASE_DELAY,
+        return_404_marker=True,
+    )
 
 
 def parse_vessel_list_page(html):
@@ -535,7 +521,13 @@ def main():
     - сохранение фотографий в локальное хранилище.
     """
     mode = os.getenv("SCRAPER_MODE", "test")
+    metrics = RuntimeMetrics()
     logging.info(f"MyShipTracking Scraper started, mode: {mode}")
+    preflight_conn = get_db_conn()
+    try:
+        validate_scraper_schema(preflight_conn)
+    finally:
+        preflight_conn.close()
 
     # Загрузить состояние
     start_page, vessels_processed = get_scraper_state(mode)
@@ -586,9 +578,9 @@ def main():
 
             # Построить URL для текущей страницы
             if current_page == 1:
-                url = f"{config.BASE_URL}?ajax=true&pp=50"
+                url = f"{config.BASE_URL}?ajax=true&pp={config.VESSELS_PER_PAGE}"
             else:
-                url = f"{config.BASE_URL}?ajax=true&pp=50&page={current_page}"
+                url = f"{config.BASE_URL}?ajax=true&pp={config.VESSELS_PER_PAGE}&page={current_page}"
 
             logging.info(f"Fetching page {current_page}: {url}")
 
@@ -596,6 +588,7 @@ def main():
             html = fetch_page(url)
             if html == "404_NOT_FOUND":
                 consecutive_404s += 1
+                metrics.pages_failed += 1
                 logging.warning(
                     f"Page {current_page} not found (404), skipping to next page ({consecutive_404s}/{MAX_CONSECUTIVE_404S} consecutive)"
                 )
@@ -603,12 +596,14 @@ def main():
                 continue
             if not html:
                 logging.error(f"Failed to fetch page {current_page}")
+                metrics.pages_failed += 1
                 break
 
             # Сбросить счётчик 404 при успешной загрузке
             consecutive_404s = 0
 
             vessels = parse_vessel_list_page(html)
+            metrics.pages_ok += 1
             if not vessels:
                 logging.info("No more vessels found")
                 break
@@ -626,9 +621,12 @@ def main():
                     futures.append(executor.submit(process_vessel, vessel_data))
 
                 for future in as_completed(futures):
-                    if future.result():
+                    result = bool(future.result())
+                    metrics.vessels_parsed += 1
+                    if result:
                         total_saved += 1
                         vessels_processed += 1
+                        metrics.vessels_saved += 1
 
             # Сохранить состояние после каждой страницы
             save_scraper_state(mode, current_page, vessels_processed)
@@ -657,6 +655,7 @@ def main():
         logging.info(
             f"Scraper finished. Total saved: {total_saved}, total processed: {vessels_processed}"
         )
+        logging.info(f"Runtime metrics: {metrics.snapshot()}")
 
 
 if __name__ == "__main__":

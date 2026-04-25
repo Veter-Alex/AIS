@@ -27,6 +27,10 @@ import psycopg2
 import requests
 from bs4 import BeautifulSoup
 from PIL import Image
+from common.db import get_db_conn, load_scraper_state, save_scraper_state
+from common.http import fetch_page_with_retry
+from common.metrics import RuntimeMetrics
+from common.schema import validate_scraper_schema
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 
@@ -87,34 +91,15 @@ def fetch_page(url, retries=0):
     Возвращает:
     - HTML текст или None в случае фатальной ошибки, "404_NOT_FOUND" при 404.
     """
-    headers = {"User-Agent": random.choice(config.USER_AGENTS)}
-
-    try:
-        response = session.get(url, headers=headers, timeout=30)
-        response.raise_for_status()
-        return response.text
-    except requests.exceptions.HTTPError as e:
-        if e.response.status_code == 404:
-            return "404_NOT_FOUND"
-        logging.warning(f"HTTP error fetching {url}: {e}")
-        if retries < config.MAX_RETRIES:
-            delay = random.uniform(config.RETRY_DELAY_MIN, config.RETRY_DELAY_MAX)
-            logging.info(
-                f"Retrying in {delay:.1f}s... (attempt {retries + 1}/{config.MAX_RETRIES})"
-            )
-            time.sleep(delay)
-            return fetch_page(url, retries + 1)
-        return None
-    except Exception as e:
-        logging.error(f"Error fetching {url}: {e}")
-        if retries < config.MAX_RETRIES:
-            delay = random.uniform(config.RETRY_DELAY_MIN, config.RETRY_DELAY_MAX)
-            logging.info(
-                f"Retrying in {delay:.1f}s... (attempt {retries + 1}/{config.MAX_RETRIES})"
-            )
-            time.sleep(delay)
-            return fetch_page(url, retries + 1)
-        return None
+    return fetch_page_with_retry(
+        session=session,
+        url=url,
+        user_agents=config.USER_AGENTS,
+        timeout=30,
+        max_retries=config.MAX_RETRIES,
+        retry_delay_range=(config.RETRY_DELAY_MIN, config.RETRY_DELAY_MAX),
+        return_404_marker=True,
+    )
 
 
 def parse_vessel_list_page(html):
@@ -381,7 +366,7 @@ def save_vessel_to_db(vessel_data, conn):
         cursor.close()
 
 
-def process_vessel(vessel_basic, conn):
+def process_vessel(vessel_basic, db_settings, metrics):
     """Обработать одно судно: детали, фото и запись в БД.
 
     Параметры:
@@ -423,19 +408,33 @@ def process_vessel(vessel_basic, conn):
     # Скачать фото, если есть
     photo_url = vessel_data.get("photo_url")
     if photo_url:
+        metrics.photo_attempts += 1
         mmsi = vessel_data.get("mmsi")
         photo_path = download_image(photo_url, mmsi)
         if photo_path:
+            metrics.photo_success += 1
             vessel_data["photo_path"] = photo_path
             logging.info(f"Photo saved: {photo_path}")
         else:
             logging.warning(f"Failed to download photo for {vessel_data.get('name')}")
 
-    # Сохранить в БД
-    if save_vessel_to_db(vessel_data, conn):
-        logging.info(
-            f"Saved vessel: {vessel_data.get('name')} (MMSI: {vessel_data.get('mmsi')})"
-        )
+    conn = get_db_conn(
+        default_db=db_settings["db"],
+        default_user=db_settings["user"],
+        default_password=db_settings["password"],
+        default_host=db_settings["host"],
+        default_port=db_settings["port"],
+    )
+    try:
+        # Сохранить в БД
+        if save_vessel_to_db(vessel_data, conn):
+            logging.info(
+                f"Saved vessel: {vessel_data.get('name')} (MMSI: {vessel_data.get('mmsi')})"
+            )
+            return True
+        return False
+    finally:
+        conn.close()
 
 
 def load_state(conn, mode):
@@ -448,21 +447,10 @@ def load_state(conn, mode):
     Возвращает:
     - Кортеж (last_page, vessels_count) или (0, 0) если состояние не найдено.
     """
-    cursor = conn.cursor()
-    cursor.execute(
-        """
-        SELECT last_page, vessels_count
-        FROM scraper_state
-        WHERE scraper_name = %s AND mode = %s
-        """,
-        (config.DATA_SOURCE, mode),
-    )
-    row = cursor.fetchone()
-    cursor.close()
-
-    if row:
-        return row[0], row[1]
-    return 0, 0
+    last_page, vessels_count = load_scraper_state(conn, config.DATA_SOURCE, mode)
+    if last_page == 1 and vessels_count == 0:
+        return 0, 0
+    return last_page, vessels_count
 
 
 def save_state(conn, mode, page, vessels_count):
@@ -474,20 +462,7 @@ def save_state(conn, mode, page, vessels_count):
     - page: текущая страница.
     - vessels_count: количество обработанных судов.
     """
-    cursor = conn.cursor()
-    cursor.execute(
-        """
-        INSERT INTO scraper_state (scraper_name, mode, last_page, vessels_count, last_run_at)
-        VALUES (%s, %s, %s, %s, %s)
-        ON CONFLICT (scraper_name, mode) DO UPDATE SET
-            last_page = EXCLUDED.last_page,
-            vessels_count = EXCLUDED.vessels_count,
-            last_run_at = EXCLUDED.last_run_at
-        """,
-        (config.DATA_SOURCE, mode, page, vessels_count, datetime.now()),
-    )
-    conn.commit()
-    cursor.close()
+    save_scraper_state(conn, config.DATA_SOURCE, mode, page, vessels_count)
     logging.info(f"State saved: mode '{mode}', page {page}, vessels {vessels_count}")
 
 
@@ -510,14 +485,23 @@ def main():
 
     logging.info(f"MarineTraffic Scraper started, mode: {mode}")
 
-    # Подключение к БД
-    conn = psycopg2.connect(
-        dbname=os.getenv("POSTGRES_DB", "vessels_db"),
-        user=os.getenv("POSTGRES_USER", "user"),
-        password=os.getenv("POSTGRES_PASSWORD", "password"),
-        host=os.getenv("POSTGRES_HOST", "db"),
-        port=os.getenv("POSTGRES_PORT", "5432"),
+    conn = None
+    metrics = RuntimeMetrics()
+    db_settings = {
+        "db": os.getenv("POSTGRES_DB", "vessels_db"),
+        "user": os.getenv("POSTGRES_USER", "user"),
+        "password": os.getenv("POSTGRES_PASSWORD", "password"),
+        "host": os.getenv("POSTGRES_HOST", "db"),
+        "port": os.getenv("POSTGRES_PORT", "5432"),
+    }
+    conn = get_db_conn(
+        default_db=db_settings["db"],
+        default_user=db_settings["user"],
+        default_password=db_settings["password"],
+        default_host=db_settings["host"],
+        default_port=db_settings["port"],
     )
+    validate_scraper_schema(conn)
 
     # Загрузить состояние
     last_page, vessels_count = load_state(conn, mode)
@@ -588,16 +572,19 @@ def main():
                     break
 
                 current_page += 1
+                metrics.pages_failed += 1
                 continue
 
             if not html:
                 logging.error(f"Failed to fetch page {current_page}, stopping")
+                metrics.pages_failed += 1
                 break
 
             # Сбросить счётчик последовательных 404
             consecutive_404s = 0
 
             vessels_on_page = parse_vessel_list_page(html)
+            metrics.pages_ok += 1
 
             if not vessels_on_page:
                 logging.warning(f"No vessels found on page {current_page}, stopping")
@@ -610,13 +597,21 @@ def main():
             # Обработать суда многопоточно
             with ThreadPoolExecutor(max_workers=4) as executor:
                 futures = {
-                    executor.submit(process_vessel, vessel, conn): vessel
+                    executor.submit(process_vessel, vessel, db_settings, metrics): vessel
                     for vessel in vessels_on_page
                 }
 
                 for future in as_completed(futures):
+                    result = False
+                    try:
+                        result = bool(future.result())
+                    except Exception as exc:
+                        logging.error(f"Worker error on page {current_page}: {exc}")
                     vessels_processed += 1
-                    total_saved += 1
+                    metrics.vessels_parsed += 1
+                    if result:
+                        total_saved += 1
+                        metrics.vessels_saved += 1
 
                     # Проверить лимит судов
                     if max_vessels and vessels_processed >= max_vessels:
@@ -650,11 +645,13 @@ def main():
         logging.error(f"Unexpected error: {e}")
     finally:
         # Сохранить финальное состояние
-        save_state(conn, mode, current_page, vessels_processed)
-        conn.close()
+        if conn:
+            save_state(conn, mode, current_page, vessels_processed)
+            conn.close()
         logging.info(
             f"Scraper finished. Total saved: {total_saved}, total processed: {vessels_processed}"
         )
+        logging.info(f"Runtime metrics: {metrics.snapshot()}")
 
 
 if __name__ == "__main__":

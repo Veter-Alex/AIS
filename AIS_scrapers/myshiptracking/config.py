@@ -50,8 +50,8 @@ USER_AGENTS = [
 ]
 
 # Настройки базы данных (будут переопределены через ENV в Docker)
-DB_HOST = "localhost"
+DB_HOST = "db"
 DB_PORT = "5432"
-DB_NAME = "ais_db"
-DB_USER = "ais_user"
-DB_PASSWORD = "ais_password"
+DB_NAME = "vessels_db"
+DB_USER = "user"
+DB_PASSWORD = "password"
