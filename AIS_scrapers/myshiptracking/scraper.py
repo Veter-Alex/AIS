@@ -16,6 +16,7 @@ import logging
 import os
 import random
 import re
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
@@ -36,6 +37,96 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(mess
 
 # Глобальная сессия для переиспользования соединений
 session = requests.Session()
+PLACEHOLDER_VALUES = {"", "-", "n/a", "na", "none", "unknown", "not available"}
+
+
+def normalize_mmsi(raw):
+    """Привести MMSI к виду ровно 9 цифр."""
+    if raw is None:
+        return None
+    text = str(raw).strip()
+    if not text:
+        return None
+    digits = re.sub(r"\D", "", text)
+    return digits if len(digits) == 9 else None
+
+
+def normalize_vessel_name(raw):
+    """Очистить имя судна от служебных хвостов IMO/MMSI."""
+    if raw is None:
+        return None
+    name = str(raw).strip()
+    if not name:
+        return None
+    name = re.sub(r"(?:IMO|MMSI)\s*:?\s*\d+", "", name, flags=re.IGNORECASE)
+    name = re.sub(r"\s+", " ", name).strip(" -,:;/")
+    return name or None
+
+
+def normalize_label_text(raw):
+    """Нормализовать текстовые поля и убрать placeholder значения."""
+    if raw is None:
+        return None
+    text = str(raw).strip()
+    if not text:
+        return None
+    text = re.sub(r"\s+", " ", text)
+    if text.lower() in PLACEHOLDER_VALUES:
+        return None
+    text = re.sub(r"(?:IMO|MMSI)\s*:?\s*\d+", "", text, flags=re.IGNORECASE)
+    text = text.strip(" -,:;/")
+    if text.lower() in PLACEHOLDER_VALUES:
+        return None
+    return text or None
+
+
+def sanitize_numeric(value, *, min_value=None, max_value=None):
+    if value is None:
+        return None
+    ivalue = parse_int(value)
+    if ivalue is None:
+        return None
+    if min_value is not None and ivalue < min_value:
+        return None
+    if max_value is not None and ivalue > max_value:
+        return None
+    return ivalue
+
+
+def choose_worker_count(last_page_error_ratio: float, recent_retry_count: int) -> int:
+    if last_page_error_ratio > 0.65 or recent_retry_count >= 20:
+        return 2
+    if last_page_error_ratio > 0.4 or recent_retry_count >= 12:
+        return 3
+    if last_page_error_ratio < 0.15 and recent_retry_count <= 3:
+        return 6
+    if last_page_error_ratio < 0.25 and recent_retry_count <= 6:
+        return 5
+    return 4
+
+
+def validate_vessel_payload(vessel_data, metrics):
+    vessel_data["name"] = normalize_vessel_name(vessel_data.get("name"))
+    vessel_data["flag"] = normalize_label_text(vessel_data.get("flag"))
+    vessel_data["general_type"] = normalize_label_text(vessel_data.get("general_type"))
+    vessel_data["detailed_type"] = normalize_label_text(vessel_data.get("detailed_type"))
+    vessel_data["mmsi"] = normalize_mmsi(vessel_data.get("mmsi"))
+
+    if not vessel_data.get("name"):
+        metrics.empty_name += 1
+        return False
+    if not vessel_data.get("mmsi"):
+        metrics.invalid_mmsi += 1
+        return False
+
+    vessel_data["year_built"] = sanitize_numeric(
+        vessel_data.get("year_built"), min_value=1800, max_value=datetime.now().year + 1
+    )
+    vessel_data["length"] = sanitize_numeric(vessel_data.get("length"), min_value=10, max_value=500)
+    vessel_data["width"] = sanitize_numeric(vessel_data.get("width"), min_value=2, max_value=90)
+    vessel_data["gt"] = sanitize_numeric(vessel_data.get("gt"), min_value=50, max_value=600000)
+    vessel_data["dwt"] = sanitize_numeric(vessel_data.get("dwt"), min_value=100, max_value=700000)
+    return True
 
 
 def download_image(photo_url, vessel_key):
@@ -253,7 +344,7 @@ def save_vessel(vessel):
         conn.close()
 
 
-def fetch_page(url, retries=0):
+def fetch_page(url, metrics=None):
     """Загрузить страницу по URL с логикой повторных попыток.
 
     Использует общий `requests.Session` для переиспользования соединений.
@@ -266,7 +357,11 @@ def fetch_page(url, retries=0):
     - Текст HTML или None при неудаче после `config.MAX_RETRIES`.
     - Специальное значение "404_NOT_FOUND" при ошибке 404 (для пропуска страницы).
     """
-    return fetch_page_with_retry(
+    def _on_retry(_url, _attempt, _max_attempts, _kind):
+        if metrics is not None:
+            metrics.retry_count += 1
+
+    page = fetch_page_with_retry(
         session=session,
         url=url,
         user_agents=config.USER_AGENTS,
@@ -274,7 +369,11 @@ def fetch_page(url, retries=0):
         max_retries=config.MAX_RETRIES,
         retry_base_delay=config.RETRY_BASE_DELAY,
         return_404_marker=True,
+        on_retry=_on_retry,
     )
+    if page is None and metrics is not None:
+        metrics.http_failures += 1
+    return page
 
 
 def parse_vessel_list_page(html):
@@ -313,7 +412,7 @@ def parse_vessel_list_page(html):
         if name_cell:
             link = name_cell.find("a")
             if link:
-                vessel_name = link.text.strip()
+                vessel_name = normalize_vessel_name(link.text.strip())
                 href = link.get("href")
                 if href:
                     # Собрать полный URL
@@ -322,22 +421,20 @@ def parse_vessel_list_page(html):
                     else:
                         vessel_url = "https://www.myshiptracking.com" + href
             else:
-                vessel_name = name_cell.get_text(strip=True)
+                vessel_name = normalize_vessel_name(name_cell.get_text(strip=True))
 
         # Извлечь MMSI
-        vessel_mmsi = mmsi_cell.get_text(strip=True) if mmsi_cell else None
-        if vessel_mmsi and not vessel_mmsi.isdigit():
-            vessel_mmsi = None
+        vessel_mmsi = normalize_mmsi(mmsi_cell.get_text(strip=True) if mmsi_cell else None)
 
         # Извлечь тип судна
-        vessel_type = type_cell.get_text(strip=True) if type_cell else None
+        vessel_type = normalize_label_text(type_cell.get_text(strip=True) if type_cell else None)
 
         # Извлечь флаг из img или title атрибута в первой ячейке
         vessel_flag = None
         if name_cell:
             flag_img = name_cell.find("img", {"title": True})
             if flag_img:
-                vessel_flag = flag_img.get("title", "").strip()
+                vessel_flag = normalize_label_text(flag_img.get("title", "").strip())
 
         # Пропустить строки без имени или MMSI
         if not vessel_name or not vessel_mmsi:
@@ -406,23 +503,25 @@ def parse_vessel_detail_page(html, vessel_data):
     if not year_built:
         year_built = extract_field(r"(?:Year\s*Built|Build)[:\s]+(\d{4})")
     if year_built:
-        vessel_data["year_built"] = parse_int(year_built, min_digits=4)
+        vessel_data["year_built"] = sanitize_numeric(
+            year_built, min_value=1800, max_value=datetime.now().year + 1
+        )
 
     # Извлечь размеры (формат: Size | 183 x 32 m)
     size_match = re.search(r"Size\s*\|\s*(\d+)\s*x\s*(\d+)", text, re.IGNORECASE)
     if size_match:
-        vessel_data["length"] = int(size_match.group(1))
-        vessel_data["width"] = int(size_match.group(2))
+        vessel_data["length"] = sanitize_numeric(size_match.group(1), min_value=10, max_value=500)
+        vessel_data["width"] = sanitize_numeric(size_match.group(2), min_value=2, max_value=90)
 
     # Извлечь DWT (формат: DWT | 46,219 Tons)
     dwt = extract_field(r"DWT\s*\|\s*([\d,]+)")
     if dwt:
-        vessel_data["dwt"] = parse_int(dwt, min_digits=3)
+        vessel_data["dwt"] = sanitize_numeric(dwt, min_value=100, max_value=700000)
 
     # Извлечь GT (формат: GT | 30,024 Tons)
     gt = extract_field(r"GT\s*\|\s*([\d,]+)")
     if gt:
-        vessel_data["gt"] = parse_int(gt, min_digits=3)
+        vessel_data["gt"] = sanitize_numeric(gt, min_value=50, max_value=600000)
 
     # Извлечь тип из подзаголовка (например "Oil/Chemical Tanker")
     detailed_type = None
@@ -435,7 +534,7 @@ def parse_vessel_detail_page(html, vessel_data):
             and len(h2_text) > 3
             and h2_text not in ["Info", "Weather", "Events"]
         ):
-            detailed_type = h2_text
+            detailed_type = normalize_label_text(h2_text)
             break
     if detailed_type and not vessel_data.get("detailed_type"):
         vessel_data["detailed_type"] = detailed_type
@@ -479,7 +578,7 @@ def parse_vessel_detail_page(html, vessel_data):
     return vessel_data
 
 
-def process_vessel(vessel_data):
+def process_vessel(vessel_data, metrics, detail_cache, cache_lock):
     """Обработать одно судно: загрузить детали (если есть URL), распарсить и сохранить.
 
     Включает небольшую случайную задержку для рассинхронизации потоков.
@@ -496,9 +595,25 @@ def process_vessel(vessel_data):
 
         # Если есть URL страницы деталей, загрузить и распарсить
         if vessel_data.get("url"):
-            detail_html = fetch_page(vessel_data["url"])
+            with cache_lock:
+                detail_html = detail_cache.get(vessel_data["url"])
+            if detail_html is None:
+                detail_html = fetch_page(vessel_data["url"], metrics=metrics)
+                with cache_lock:
+                    detail_cache[vessel_data["url"]] = detail_html
             if detail_html:
                 vessel_data = parse_vessel_detail_page(detail_html, vessel_data)
+
+        if not validate_vessel_payload(vessel_data, metrics):
+            metrics.invalid_payload += 1
+            logging.warning(
+                "Skipping vessel invalid payload name=%r mmsi=%r type=%r url=%s",
+                vessel_data.get("name"),
+                vessel_data.get("mmsi"),
+                vessel_data.get("general_type"),
+                vessel_data.get("url"),
+            )
+            return False
 
         if save_vessel(vessel_data):
             log_event(
@@ -561,7 +676,11 @@ def main():
     MAX_CONSECUTIVE_404S = 10  # Остановиться после 10 подряд 404
 
     # Количество параллельных потоков
-    MAX_WORKERS = 4
+    detail_cache = {}
+    detail_cache_lock = threading.Lock()
+    last_page_error_ratio = 0.0
+    retry_count_before_page = metrics.retry_count
+    checkpoint_every_saved = 10
 
     try:
         while True:
@@ -590,7 +709,7 @@ def main():
             logging.info(f"Fetching page {current_page}: {url}")
 
             # Загрузить и распарсить страницу списка
-            html = fetch_page(url)
+            html = fetch_page(url, metrics=metrics)
             if html == "404_NOT_FOUND":
                 consecutive_404s += 1
                 metrics.pages_failed += 1
@@ -620,28 +739,61 @@ def main():
                 logging.info("No more vessels found")
                 break
 
+            workers = choose_worker_count(
+                last_page_error_ratio=last_page_error_ratio,
+                recent_retry_count=max(metrics.retry_count - retry_count_before_page, 0),
+            )
             logging.info(
-                f"Found {len(vessels)} vessels on page {current_page}. Processing with {MAX_WORKERS} threads..."
+                f"Found {len(vessels)} vessels on page {current_page}. Processing with {workers} threads..."
             )
 
             # Обработать суда параллельно
-            with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
+            page_processed = 0
+            page_saved = 0
+            with ThreadPoolExecutor(max_workers=workers) as executor:
                 futures = []
                 for vessel_data in vessels:
                     if max_vessels and vessels_processed >= max_vessels:
                         break
-                    futures.append(executor.submit(process_vessel, vessel_data))
+                    futures.append(
+                        executor.submit(process_vessel, vessel_data, metrics, detail_cache, detail_cache_lock)
+                    )
 
                 for future in as_completed(futures):
-                    result = bool(future.result())
+                    result = False
+                    try:
+                        result = bool(future.result())
+                    except Exception as exc:
+                        logging.error(f"Worker error on page {current_page}: {exc}")
                     metrics.vessels_parsed += 1
+                    page_processed += 1
                     if result:
                         total_saved += 1
+                        page_saved += 1
                         vessels_processed += 1
                         metrics.vessels_saved += 1
+                        if total_saved % checkpoint_every_saved == 0:
+                            save_scraper_state(mode, current_page, vessels_processed)
+
+            if page_processed:
+                last_page_error_ratio = max(
+                    0.0, min(1.0, (page_processed - page_saved) / float(page_processed))
+                )
+            retry_count_before_page = metrics.retry_count
 
             # Сохранить состояние после каждой страницы
             save_scraper_state(mode, current_page, vessels_processed)
+            if last_page_error_ratio > 0.5:
+                logging.warning(
+                    "Quality guardrail: high error ratio page=%s ratio=%.2f",
+                    current_page,
+                    last_page_error_ratio,
+                )
+            if metrics.http_failures > 20:
+                logging.warning(
+                    "Quality guardrail: many final HTTP failures count=%s",
+                    metrics.http_failures,
+                )
             current_page += 1
 
             # Периодический перерыв для избежания обнаружения

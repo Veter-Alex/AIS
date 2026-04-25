@@ -83,6 +83,16 @@ def test_myshiptracking_golden():
     assert vessel["dwt"] == 46219
 
 
+def test_myshiptracking_normalizers():
+    module = _load_scraper("myshiptracking_norm", "myshiptracking")
+    assert module.normalize_mmsi("305 123 456") == "305123456"
+    assert module.normalize_mmsi("1") is None
+    assert module.normalize_vessel_name("BLUE IMO: 9862231 MMSI: 319239400") == "BLUE"
+    assert module.normalize_label_text(" unknown ") is None
+    assert module.sanitize_numeric("399", min_value=10, max_value=500) == 399
+    assert module.sanitize_numeric("1", min_value=10, max_value=500) is None
+
+
 def test_maritime_database_golden():
     module = _load_scraper("maritime_scraper", "maritime_database")
     list_rows = module.parse_vessel_list_page(_read_fixture("maritime_list.html"))
