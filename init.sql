@@ -66,3 +66,13 @@ ALTER TABLE scraper_state ADD COLUMN IF NOT EXISTS mode VARCHAR(20);
 ALTER TABLE scraper_state ADD COLUMN IF NOT EXISTS last_page INTEGER;
 ALTER TABLE scraper_state ADD COLUMN IF NOT EXISTS vessels_count INTEGER;
 ALTER TABLE scraper_state ADD COLUMN IF NOT EXISTS last_run_at TIMESTAMP;
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1
+        FROM pg_constraint
+        WHERE conname = 'vessels_mmsi_unique'
+    ) THEN
+        ALTER TABLE vessels ADD CONSTRAINT vessels_mmsi_unique UNIQUE (mmsi);
+    END IF;
+END $$;
