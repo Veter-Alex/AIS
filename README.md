@@ -9,6 +9,11 @@
 
 Проект для сбора, хранения, поиска и анализа данных о судах.
 
+## About this project
+
+AIS is a modular vessel intelligence platform that combines data ingestion,
+storage, API access, and AI-assisted workflows for maritime operations.
+
 Система включает:
 - PostgreSQL (с поддержкой pgvector);
 - API по судам (vessel_api);
