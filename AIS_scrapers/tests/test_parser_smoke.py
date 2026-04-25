@@ -62,6 +62,15 @@ def test_marinetraffic_name_cleanup():
     assert rows[0]["name"] == "BLUE"
 
 
+def test_marinetraffic_label_and_numeric_cleanup():
+    module = _load_scraper("marinetraffic_label_cleanup", "marinetraffic")
+    assert module.normalize_label_text(" unknown ") is None
+    assert module.normalize_label_text("Panama") == "Panama"
+    assert module.normalize_label_text("Cargo IMO: 1234567") == "Cargo"
+    assert module.sanitize_numeric("399", min_value=10, max_value=500) == 399
+    assert module.sanitize_numeric("1", min_value=10, max_value=500) is None
+
+
 def test_myshiptracking_golden():
     module = _load_scraper("myshiptracking_scraper", "myshiptracking")
     list_rows = module.parse_vessel_list_page(_read_fixture("myshiptracking_list.html"))
