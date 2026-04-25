@@ -1,5 +1,12 @@
 # AIS Vessel Database
 
+[![Python](https://img.shields.io/badge/Python-3.8%2B-3776AB?logo=python&logoColor=white)](https://www.python.org/)
+[![FastAPI](https://img.shields.io/badge/FastAPI-API-009688?logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com/)
+[![React](https://img.shields.io/badge/React-Frontend-61DAFB?logo=react&logoColor=black)](https://react.dev/)
+[![PostgreSQL](https://img.shields.io/badge/PostgreSQL-Database-4169E1?logo=postgresql&logoColor=white)](https://www.postgresql.org/)
+[![pgvector](https://img.shields.io/badge/pgvector-Enabled-2E8B57)](https://github.com/pgvector/pgvector)
+[![Status](https://img.shields.io/badge/Status-Active%20Development-brightgreen)](#)
+
 Проект для сбора, хранения, поиска и анализа данных о судах.
 
 Система включает:
