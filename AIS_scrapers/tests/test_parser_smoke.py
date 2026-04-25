@@ -134,3 +134,34 @@ def test_vesselfinder_handles_broken_html(monkeypatch):
     vessel = module.parse_vessel("https://example.com/broken")
     assert vessel is not None
     assert vessel["mmsi"] is None
+
+
+def test_vesselfinder_normalizers():
+    module = _load_scraper("vesselfinder_norm", "vesselfinder")
+    assert module.normalize_mmsi("477 642 800") == "477642800"
+    assert module.normalize_mmsi("1") is None
+    assert module.normalize_vessel_name("BLUE IMO: 9862231 MMSI: 319239400") == "BLUE"
+    assert module.normalize_label_text(" unknown ") is None
+    assert module.sanitize_numeric("399", min_value=10, max_value=500) == 399
+    assert module.sanitize_numeric("1", min_value=10, max_value=500) is None
+
+
+def test_vesselfinder_metric_fallbacks(monkeypatch):
+    module = _load_scraper("vesselfinder_metric_fallbacks", "vesselfinder")
+    html = """
+    <html><body>
+      <h1>TEST SHIP</h1>
+      <div>IMO 1234567 MMSI 477642800</div>
+      <div>LOA: 399 m</div>
+      <div>GT: 153,115</div>
+      <div>DWT: 281,456 t</div>
+      <img class="main-photo" src="https://example.com/a.jpg" />
+    </body></html>
+    """
+    monkeypatch.setattr(module, "get_html_with_selenium", lambda *_args, **_kwargs: html)
+    monkeypatch.setattr(module, "download_image", lambda *_args, **_kwargs: None)
+    vessel = module.parse_vessel("https://example.com/fallback")
+    assert vessel is not None
+    assert vessel["length"] == 399
+    assert vessel["gt"] == 153115
+    assert vessel["dwt"] == 281456
