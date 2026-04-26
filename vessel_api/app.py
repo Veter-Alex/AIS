@@ -19,23 +19,26 @@ import os
 from datetime import datetime
 from io import BytesIO, StringIO
 from pathlib import Path
-from typing import List, Optional
 
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, StreamingResponse
 from psycopg2.extras import RealDictCursor
 from pydantic import BaseModel
-from db import get_db_cursor
+
+from ais_shared.db import get_db_cursor
+from ais_shared.log_setup import configure_service_logging
 
 app = FastAPI()
 IMAGES_BASE_DIR = Path("/app/images").resolve()
 logger = logging.getLogger(__name__)
+configure_service_logging("vessel_api")
 
 
 def _raise_internal_error(exc: Exception, context: str) -> None:
     logger.exception("%s: %s", context, exc)
     raise HTTPException(status_code=500, detail="Internal server error")
+
 
 # CORS для frontend.
 # Управляется через CORS_ALLOW_ORIGINS:
@@ -47,7 +50,11 @@ cors_origins_env = os.getenv(
 allow_origins = (
     ["*"]
     if cors_origins_env.strip() == "*"
-    else [origin.strip() for origin in cors_origins_env.split(",") if origin.strip()]
+    else [
+        origin.strip()
+        for origin in cors_origins_env.split(",")
+        if origin.strip()
+    ]
 )
 
 app.add_middleware(
@@ -60,68 +67,88 @@ app.add_middleware(
 
 
 class Vessel(BaseModel):
-    id: Optional[int] = None
+    id: int | None = None
     name: str
     imo: str
     mmsi: str
     call_sign: str
-    general_type: Optional[str] = None
-    detailed_type: Optional[str] = None
+    general_type: str | None = None
+    detailed_type: str | None = None
     flag: str
-    year_built: Optional[int] = None
-    length: Optional[int] = None
-    width: Optional[int] = None
-    dwt: Optional[int] = None
-    gt: Optional[int] = None
-    home_port: Optional[str] = None
-    photo_path: Optional[str] = None
-    description: Optional[str] = None
+    year_built: int | None = None
+    length: int | None = None
+    width: int | None = None
+    dwt: int | None = None
+    gt: int | None = None
+    home_port: str | None = None
+    photo_path: str | None = None
+    description: str | None = None
     info_source: str
-    updated_at: Optional[datetime] = None
+    updated_at: datetime | None = None
 
 
 class VesselListResponse(BaseModel):
     total: int
     page: int
     per_page: int
-    vessels: List[Vessel]
+    vessels: list[Vessel]
 
 
 class VesselUpdate(BaseModel):
-    name: Optional[str] = None
-    imo: Optional[str] = None
-    mmsi: Optional[str] = None
-    call_sign: Optional[str] = None
-    general_type: Optional[str] = None
-    detailed_type: Optional[str] = None
-    flag: Optional[str] = None
-    year_built: Optional[int] = None
-    length: Optional[int] = None
-    width: Optional[int] = None
-    dwt: Optional[int] = None
-    gt: Optional[int] = None
-    home_port: Optional[str] = None
-    description: Optional[str] = None
+    name: str | None = None
+    imo: str | None = None
+    mmsi: str | None = None
+    call_sign: str | None = None
+    general_type: str | None = None
+    detailed_type: str | None = None
+    flag: str | None = None
+    year_built: int | None = None
+    length: int | None = None
+    width: int | None = None
+    dwt: int | None = None
+    gt: int | None = None
+    home_port: str | None = None
+    description: str | None = None
 
 
 class StatsResponse(BaseModel):
     total_vessels: int
-    vessel_types: List[dict]
-    flags: List[dict]
+    vessel_types: list[dict]
+    flags: list[dict]
+
+
+@app.get("/health")
+def health() -> dict[str, str]:
+    """Liveness: процесс отвечает (без проверки БД)."""
+    return {"status": "ok"}
+
+
+@app.get("/ready")
+def ready() -> dict[str, str]:
+    """Readiness: доступность PostgreSQL."""
+    try:
+        with get_db_cursor() as cur:
+            cur.execute("SELECT 1")
+    except Exception as exc:
+        logger.exception("readiness check failed: %s", exc)
+        raise HTTPException(
+            status_code=503, detail="database unavailable"
+        ) from exc
+    return {"status": "ready"}
 
 
 @app.get("/vessels/", response_model=VesselListResponse)
 def get_vessels(
     page: int = Query(1, ge=1),
     per_page: int = Query(20, ge=1, le=100),
-    search: Optional[str] = Query(None),
-    vessel_types: Optional[str] = Query(None),
-    flags: Optional[str] = Query(None),
-    info_sources: Optional[str] = Query(None),
-    year_from: Optional[int] = Query(None),
-    year_to: Optional[int] = Query(None),
-    sort_by: Optional[str] = Query("name"),
-    sort_order: Optional[str] = Query("asc"),
+    search: str | None = Query(None),
+    vessel_types: str | None = Query(None),
+    flags: str | None = Query(None),
+    info_sources: str | None = Query(None),
+    year_from: int | None = Query(None),
+    year_to: int | None = Query(None),
+    sort_by: str | None = Query("name"),
+    sort_order: str | None = Query("asc"),
 ):
     """Получить список судов с фильтрацией, поиском, сортировкой и пагинацией.
 
@@ -142,7 +169,9 @@ def get_vessels(
 
         # Полнотекстовый поиск
         if search:
-            where_clauses.append("(name ILIKE %s OR imo ILIKE %s OR mmsi ILIKE %s)")
+            where_clauses.append(
+                "(name ILIKE %s OR imo ILIKE %s OR mmsi ILIKE %s)"
+            )
             search_pattern = f"%{search}%"
             params.extend([search_pattern, search_pattern, search_pattern])
 
@@ -199,7 +228,7 @@ def get_vessels(
 
         offset = (page - 1) * per_page
         query = f"""
-            SELECT 
+            SELECT
                 id,
                 COALESCE(TRIM(name),'') AS name,
                 COALESCE(imo,'') AS imo,
@@ -229,7 +258,8 @@ def get_vessels(
         with get_db_cursor(cursor_factory=RealDictCursor) as cur:
             # Подсчет общего количества
             cur.execute(
-                f"SELECT COUNT(*) as total FROM vessels WHERE {where_clause}", count_params
+                f"SELECT COUNT(*) as total FROM vessels WHERE {where_clause}",
+                count_params,
             )
             total = cur.fetchone()["total"]
             cur.execute(query, query_params)
@@ -260,7 +290,7 @@ def get_vessel_by_imo(imo: str):
         with get_db_cursor(cursor_factory=RealDictCursor) as cur:
             cur.execute(
                 """
-            SELECT 
+            SELECT
                 id,
                 COALESCE(TRIM(name),'') AS name,
                 COALESCE(imo,'') AS imo,
@@ -361,10 +391,10 @@ def update_vessel(imo: str, vessel_update: VesselUpdate):
         params.extend([imo, imo])
 
         query = f"""
-            UPDATE vessels 
+            UPDATE vessels
             SET {", ".join(update_fields)}
             WHERE imo = %s OR mmsi = %s
-            RETURNING 
+            RETURNING
                 id,
                 COALESCE(TRIM(name),'') AS name,
                 COALESCE(imo,'') AS imo,
@@ -387,7 +417,10 @@ def update_vessel(imo: str, vessel_update: VesselUpdate):
 
         with get_db_cursor(cursor_factory=RealDictCursor, commit=True) as cur:
             # Проверяем существование судна
-            cur.execute("SELECT id FROM vessels WHERE imo = %s OR mmsi = %s", (imo, imo))
+            cur.execute(
+                "SELECT id FROM vessels WHERE imo = %s OR mmsi = %s",
+                (imo, imo),
+            )
             if not cur.fetchone():
                 raise HTTPException(status_code=404, detail="Vessel not found")
             cur.execute(query, params)
@@ -411,7 +444,6 @@ def get_stats():
     """
     try:
         with get_db_cursor(cursor_factory=RealDictCursor) as cur:
-
             # Общее количество
             cur.execute("SELECT COUNT(*) as total FROM vessels")
             total = cur.fetchone()["total"]
@@ -453,7 +485,6 @@ def get_sources():
     """Получить список источников данных с количеством судов."""
     try:
         with get_db_cursor(cursor_factory=RealDictCursor) as cur:
-
             cur.execute(
                 """
             SELECT info_source, COUNT(*) as count
@@ -473,12 +504,12 @@ def get_sources():
 @app.get("/vessels/export/{format}")
 def export_vessels(
     format: str,
-    search: Optional[str] = Query(None),
-    vessel_types: Optional[str] = Query(None),
-    flags: Optional[str] = Query(None),
-    info_sources: Optional[str] = Query(None),
-    year_from: Optional[int] = Query(None),
-    year_to: Optional[int] = Query(None),
+    search: str | None = Query(None),
+    vessel_types: str | None = Query(None),
+    flags: str | None = Query(None),
+    info_sources: str | None = Query(None),
+    year_from: int | None = Query(None),
+    year_to: int | None = Query(None),
 ):
     """Экспорт отфильтрованного набора судов.
 
@@ -496,7 +527,9 @@ def export_vessels(
         params = []
 
         if search:
-            where_clauses.append("(name ILIKE %s OR imo ILIKE %s OR mmsi ILIKE %s)")
+            where_clauses.append(
+                "(name ILIKE %s OR imo ILIKE %s OR mmsi ILIKE %s)"
+            )
             search_pattern = f"%{search}%"
             params.extend([search_pattern, search_pattern, search_pattern])
 
@@ -546,7 +579,9 @@ def export_vessels(
             return StreamingResponse(
                 BytesIO(csv_bytes),
                 media_type="text/csv",
-                headers={"Content-Disposition": "attachment; filename=vessels.csv"},
+                headers={
+                    "Content-Disposition": "attachment; filename=vessels.csv"
+                },
             )
         elif format.lower() == "json":
             # Преобразуем datetime в строки
@@ -557,11 +592,14 @@ def export_vessels(
             return StreamingResponse(
                 BytesIO(json_data.encode("utf-8")),
                 media_type="application/json",
-                headers={"Content-Disposition": "attachment; filename=vessels.json"},
+                headers={
+                    "Content-Disposition": "attachment; filename=vessels.json"
+                },
             )
         else:
             raise HTTPException(
-                status_code=400, detail="Unsupported format. Use 'csv' or 'json'"
+                status_code=400,
+                detail="Unsupported format. Use 'csv' or 'json'",
             )
     except HTTPException:
         raise
@@ -573,7 +611,10 @@ def export_vessels(
 def get_image(filename: str):
     """Отдать фото судна из локального каталога изображений."""
     candidate = (IMAGES_BASE_DIR / filename).resolve()
-    if IMAGES_BASE_DIR not in candidate.parents and candidate != IMAGES_BASE_DIR:
+    if (
+        IMAGES_BASE_DIR not in candidate.parents
+        and candidate != IMAGES_BASE_DIR
+    ):
         raise HTTPException(status_code=400, detail="Invalid image path")
     if not candidate.is_file():
         raise HTTPException(status_code=404, detail="Image not found")
@@ -590,7 +631,9 @@ def add_vessel(vessel: Vessel):
     """
     try:
         with get_db_cursor(commit=True) as cur:
-            name_clean = " ".join(vessel.name.split())  # сжатие множественных пробелов
+            name_clean = " ".join(
+                vessel.name.split()
+            )  # сжатие множественных пробелов
             cur.execute(
                 """
                 INSERT INTO vessels (

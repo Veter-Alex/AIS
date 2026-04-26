@@ -11,10 +11,10 @@
 
 Для локального запуска используйте только изолированное окружение проекта.
 
-Создание `.venv` (Python 3.8):
+Создание `.venv` (Python 3.11, как в CI и Docker):
 
 ```bash
-py -3.8 -m venv .venv
+py -3.11 -m venv .venv
 ```
 
 Установка зависимостей всех скраперов + тестов:
@@ -45,7 +45,7 @@ set SCRAPER_MODE=test
 
 ## Важные заметки
 
-- Перед запуском убедитесь, что доступна PostgreSQL и применены `init.sql`/`AIS_offline_package/init.sql`.
+- Перед запуском убедитесь, что доступна PostgreSQL и применены миграции: из корня репозитория `alembic upgrade head` (те же правила, что для `vessel_api` в Docker). Старый `init.sql` оставлен только для справки.
 - В скраперах включены preflight-проверки схемы (`vessels.mmsi UNIQUE`, `scraper_state(scraper_name, mode)`).
 - Для production-проходов используйте Docker Compose и ENV-конфигурацию.
 

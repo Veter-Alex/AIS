@@ -2,12 +2,13 @@ import hashlib
 import importlib
 import math
 import os
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from functools import lru_cache
-from typing import Any, Dict, List, Optional
+from typing import Any
 
-from db import get_db_conn, get_db_connections
 from psycopg2.extras import Json, RealDictCursor
+
+from ais_shared.db import get_db_conn, get_db_connections
 
 # Этот модуль отвечает за первичную индексацию данных судов в ai-схему.
 #
@@ -21,7 +22,9 @@ from psycopg2.extras import Json, RealDictCursor
 
 EMBEDDING_DIM = 384
 DEFAULT_EMBEDDING_PROVIDER = os.getenv("EMBEDDING_PROVIDER", "fastembed")
-DEFAULT_EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "BAAI/bge-small-en-v1.5")
+DEFAULT_EMBEDDING_MODEL = os.getenv(
+    "EMBEDDING_MODEL", "BAAI/bge-small-en-v1.5"
+)
 
 
 def _has_pgvector_column(cur: RealDictCursor) -> bool:
@@ -51,7 +54,7 @@ def _get_fastembed_model():
     except ImportError as exc:
         raise RuntimeError("fastembed is not installed") from exc
 
-    text_embedding_cls = getattr(fastembed_module, "TextEmbedding")
+    text_embedding_cls = fastembed_module.TextEmbedding
     return text_embedding_cls(model_name=DEFAULT_EMBEDDING_MODEL)
 
 
@@ -62,7 +65,7 @@ def _clean(value: Any) -> str:
     return str(value).strip()
 
 
-def build_vessel_text(vessel: Dict[str, Any]) -> str:
+def build_vessel_text(vessel: dict[str, Any]) -> str:
     # Формируем единый текстовый профиль судна.
     # Этот текст позже будет дробиться на chunks и участвовать в retrieval.
     lines = [
@@ -85,7 +88,7 @@ def build_vessel_text(vessel: Dict[str, Any]) -> str:
     return "\n".join(lines).strip()
 
 
-def split_into_chunks(text: str, chunk_size: int = 800) -> List[str]:
+def split_into_chunks(text: str, chunk_size: int = 800) -> list[str]:
     # Простейшее разбиение текста на куски фиксированного размера.
     #
     # Почему так пока достаточно:
@@ -99,13 +102,13 @@ def split_into_chunks(text: str, chunk_size: int = 800) -> List[str]:
     return [text[i : i + chunk_size] for i in range(0, len(text), chunk_size)]
 
 
-def _tokenize(text: str) -> List[str]:
+def _tokenize(text: str) -> list[str]:
     # Простая токенизация для локального embedding без внешней модели.
     raw = [t.strip(" ,.:;!?()[]{}\"'\n\t").lower() for t in text.split()]
     return [t for t in raw if len(t) >= 2]
 
 
-def build_hash_embedding(text: str, dim: int = EMBEDDING_DIM) -> List[float]:
+def build_hash_embedding(text: str, dim: int = EMBEDDING_DIM) -> list[float]:
     # Локальный deterministic embedding для fallback-режима.
     #
     # Важно: это уже не основной режим, а страховка на случай,
@@ -128,7 +131,7 @@ def build_hash_embedding(text: str, dim: int = EMBEDDING_DIM) -> List[float]:
     return vec
 
 
-def build_embedding(text: str, dim: int = EMBEDDING_DIM) -> List[float]:
+def build_embedding(text: str, dim: int = EMBEDDING_DIM) -> list[float]:
     # Основная точка получения embeddings.
     #
     # Логика работы:
@@ -159,19 +162,19 @@ def build_embedding(text: str, dim: int = EMBEDDING_DIM) -> List[float]:
         return build_hash_embedding(text, dim=dim)
 
 
-def _vector_literal(values: List[float]) -> str:
+def _vector_literal(values: list[float]) -> str:
     # Формируем текстовый литерал формата pgvector: [0.1,0.2,...]
     return "[" + ",".join(f"{v:.8f}" for v in values) + "]"
 
 
-def _normalize_query_tokens(query: str) -> List[str]:
+def _normalize_query_tokens(query: str) -> list[str]:
     # Унифицированная токенизация для lexical search.
     raw_tokens = [t.strip(" ,.:;!?()[]{}\"'").lower() for t in query.split()]
     tokens = [t for t in raw_tokens if len(t) >= 3]
     return list(dict.fromkeys(tokens))[:8]
 
 
-def _extract_numeric_tokens(query: str) -> List[str]:
+def _extract_numeric_tokens(query: str) -> list[str]:
     # Отдельно выделяем числовые идентификаторы IMO/MMSI.
     raw_tokens = [t.strip(" ,.:;!?()[]{}\"'") for t in query.split()]
     numeric_tokens = [t for t in raw_tokens if t.isdigit() and len(t) >= 6]
@@ -179,14 +182,14 @@ def _extract_numeric_tokens(query: str) -> List[str]:
 
 
 def _merge_candidate_rows(
-    vector_rows: List[Dict[str, Any]],
-    lexical_rows: List[Dict[str, Any]],
+    vector_rows: list[dict[str, Any]],
+    lexical_rows: list[dict[str, Any]],
     limit: int,
-) -> List[Dict[str, Any]]:
+) -> list[dict[str, Any]]:
     # Объединяем vector и lexical кандидатов по chunk_id.
     # Если chunk найден обоими режимами, сохраняем лучшую distance
     # и максимальный lexical_score.
-    merged: Dict[Any, Dict[str, Any]] = {}
+    merged: dict[Any, dict[str, Any]] = {}
 
     for row in vector_rows:
         merged[row.get("chunk_id")] = dict(row)
@@ -199,14 +202,17 @@ def _merge_candidate_rows(
                 int(existing.get("lexical_score") or 0),
                 int(row.get("lexical_score") or 0),
             )
-            if existing.get("distance") is None and row.get("distance") is not None:
+            if (
+                existing.get("distance") is None
+                and row.get("distance") is not None
+            ):
                 existing["distance"] = row.get("distance")
         else:
             merged[chunk_id] = dict(row)
 
     merged_rows = list(merged.values())
 
-    def _distance_sort_value(item: Dict[str, Any]) -> float:
+    def _distance_sort_value(item: dict[str, Any]) -> float:
         distance = item.get("distance")
         if distance is None:
             return 999.0
@@ -226,8 +232,8 @@ def _search_vector_candidates(
     cur: RealDictCursor,
     query: str,
     limit: int,
-    max_distance: Optional[float],
-) -> List[Dict[str, Any]]:
+    max_distance: float | None,
+) -> list[dict[str, Any]]:
     # Векторный поиск по embedding_vec.
     query_vec = _vector_literal(build_embedding(query))
     cur.execute(
@@ -270,21 +276,23 @@ def _search_vector_candidates(
 def _search_lexical_candidates(
     cur: RealDictCursor,
     query: str,
-    tokens: List[str],
-    numeric_tokens: List[str],
+    tokens: list[str],
+    numeric_tokens: list[str],
     limit: int,
-) -> List[Dict[str, Any]]:
+) -> list[dict[str, Any]]:
     # Lexical search не только по content, но и по title/metadata.
     # Это важно для точных запросов вида IMO/MMSI/flag/type.
-    params: List[Any] = []
-    score_parts: List[str] = []
-    where_parts: List[str] = []
+    params: list[Any] = []
+    score_parts: list[str] = []
+    where_parts: list[str] = []
 
     normalized_query = query.strip().lower()
     if normalized_query:
         score_parts.append("CASE WHEN LOWER(d.title) = %s THEN 40 ELSE 0 END")
         params.append(normalized_query)
-        score_parts.append("CASE WHEN LOWER(d.title) LIKE %s THEN 18 ELSE 0 END")
+        score_parts.append(
+            "CASE WHEN LOWER(d.title) LIKE %s THEN 18 ELSE 0 END"
+        )
         params.append(f"%{normalized_query}%")
         where_parts.append("LOWER(d.title) LIKE %s")
         params.append(f"%{normalized_query}%")
@@ -328,7 +336,9 @@ def _search_lexical_candidates(
         params.extend([numeric_token, numeric_token, f"%{numeric_token}%"])
 
     if not score_parts:
-        score_parts.append("CASE WHEN LOWER(c.content) LIKE %s THEN 1 ELSE 0 END")
+        score_parts.append(
+            "CASE WHEN LOWER(c.content) LIKE %s THEN 1 ELSE 0 END"
+        )
         params.append(f"%{normalized_query}%")
         where_parts.append("LOWER(c.content) LIKE %s")
         params.append(f"%{normalized_query}%")
@@ -367,15 +377,15 @@ def _search_lexical_candidates(
 def _search_exact_candidates(
     cur: RealDictCursor,
     query: str,
-    numeric_tokens: List[str],
+    numeric_tokens: list[str],
     limit: int,
-) -> List[Dict[str, Any]]:
+) -> list[dict[str, Any]]:
     # Специальный short-path для точных IMO/MMSI-запросов.
     # Здесь не нужен широкий recall: ищем ровно по идентификаторам.
     normalized_query = query.strip().lower()
-    params: List[Any] = []
-    where_parts: List[str] = []
-    score_parts: List[str] = []
+    params: list[Any] = []
+    where_parts: list[str] = []
+    score_parts: list[str] = []
 
     for numeric_token in numeric_tokens:
         where_parts.extend(
@@ -441,15 +451,15 @@ def _parse_iso_datetime(value: str) -> datetime:
 
     parsed = datetime.fromisoformat(raw)
     if parsed.tzinfo is not None:
-        parsed = parsed.astimezone(timezone.utc).replace(tzinfo=None)
+        parsed = parsed.astimezone(UTC).replace(tzinfo=None)
     return parsed
 
 
 def _resolve_ingestion_since(
     cur: RealDictCursor,
     incremental: bool,
-    updated_after: Optional[str],
-) -> Optional[datetime]:
+    updated_after: str | None,
+) -> datetime | None:
     # Определяем нижнюю границу updated_at для delta-индексации.
     if updated_after is not None:
         return _parse_iso_datetime(updated_after)
@@ -470,7 +480,7 @@ def _resolve_ingestion_since(
     return row.get("finished_at")
 
 
-def _create_ingestion_job(meta_conn, payload: Dict[str, Any]) -> int:
+def _create_ingestion_job(meta_conn, payload: dict[str, Any]) -> int:
     # Создаем запись job сразу, чтобы статус running был виден во время индексации.
     with meta_conn.cursor(cursor_factory=RealDictCursor) as cur:
         cur.execute(
@@ -488,13 +498,13 @@ def _update_ingestion_job(
     meta_conn,
     job_id: int,
     *,
-    status: Optional[str] = None,
-    payload: Optional[Dict[str, Any]] = None,
-    error_message: Optional[str] = None,
+    status: str | None = None,
+    payload: dict[str, Any] | None = None,
+    error_message: str | None = None,
     finished: bool = False,
 ) -> None:
-    sets: List[str] = []
-    params: List[Any] = []
+    sets: list[str] = []
+    params: list[Any] = []
 
     if status is not None:
         sets.append("status = %s")
@@ -518,16 +528,16 @@ def _update_ingestion_job(
 
 
 def run_ingestion(
-    limit: Optional[int] = None,
+    limit: int | None = None,
     incremental: bool = False,
-    updated_after: Optional[str] = None,
-) -> Dict[str, int]:
+    updated_after: str | None = None,
+) -> dict[str, int]:
     # Главная функция индексации.
     # Возвращает статистику, чтобы было понятно, сколько записей обработано.
     with get_db_connections() as (conn, meta_conn):
         meta_conn.autocommit = True
-        job_id: Optional[int] = None
-        progress_payload: Dict[str, Any] = {}
+        job_id: int | None = None
+        progress_payload: dict[str, Any] = {}
         try:
             with conn.cursor(cursor_factory=RealDictCursor) as cur:
                 has_vector_col = _has_pgvector_column(cur)
@@ -559,11 +569,13 @@ def run_ingestion(
                     updated_at
                 FROM vessels
             """
-            params: List[Any] = []
-            where_parts: List[str] = []
+            params: list[Any] = []
+            where_parts: list[str] = []
 
             if since_ts is not None:
-                where_parts.append("updated_at IS NOT NULL AND updated_at > %s")
+                where_parts.append(
+                    "updated_at IS NOT NULL AND updated_at > %s"
+                )
                 params.append(since_ts)
 
             if where_parts:
@@ -583,7 +595,9 @@ def run_ingestion(
                 "limit": limit,
                 "incremental": incremental,
                 "updated_after": updated_after,
-                "resolved_since": (since_ts.isoformat() if since_ts is not None else None),
+                "resolved_since": (
+                    since_ts.isoformat() if since_ts is not None else None
+                ),
                 "progress": {
                     "total": len(vessels),
                     "processed": 0,
@@ -629,7 +643,8 @@ def run_ingestion(
                     # Чтобы не копить мусор и дубликаты,
                     # перед вставкой новых chunks удаляем старые для этого документа.
                     cur.execute(
-                        "DELETE FROM ai.chunks WHERE document_id = %s", (document_id,)
+                        "DELETE FROM ai.chunks WHERE document_id = %s",
+                        (document_id,),
                     )
 
                     chunks = split_into_chunks(profile_text)
@@ -657,7 +672,12 @@ def run_ingestion(
                                     len(chunk.split()),
                                     chunk_vec,
                                     vec_literal,
-                                    Json({"source": "vessels", "source_pk": source_pk}),
+                                    Json(
+                                        {
+                                            "source": "vessels",
+                                            "source_pk": source_pk,
+                                        }
+                                    ),
                                 ),
                             )
                         else:
@@ -680,7 +700,12 @@ def run_ingestion(
                                     chunk,
                                     len(chunk.split()),
                                     chunk_vec,
-                                    Json({"source": "vessels", "source_pk": source_pk}),
+                                    Json(
+                                        {
+                                            "source": "vessels",
+                                            "source_pk": source_pk,
+                                        }
+                                    ),
                                 ),
                             )
                         chunks_upserted += 1
@@ -694,7 +719,9 @@ def run_ingestion(
                             "documents_upserted": documents_upserted,
                             "chunks_upserted": chunks_upserted,
                         }
-                        _update_ingestion_job(meta_conn, job_id, payload=progress_payload)
+                        _update_ingestion_job(
+                            meta_conn, job_id, payload=progress_payload
+                        )
 
             conn.commit()
             progress_payload["progress"] = {
@@ -746,7 +773,7 @@ def run_ingestion(
             raise
 
 
-def list_ingestion_jobs(limit: int = 20) -> List[Dict[str, Any]]:
+def list_ingestion_jobs(limit: int = 20) -> list[dict[str, Any]]:
     # Возвращает последние записи о запусках индексации.
     # Это помогает быстро понимать, что происходило с ingestion-процессом:
     # - когда запускали;
@@ -773,8 +800,8 @@ def search_chunks(
     query: str,
     limit: int = 5,
     mode: str = "hybrid",
-    max_distance: Optional[float] = None,
-) -> List[Dict[str, Any]]:
+    max_distance: float | None = None,
+) -> list[dict[str, Any]]:
     # Базовый retrieval по chunks через ILIKE.
     #
     # Это промежуточный этап до внедрения pgvector:
@@ -797,8 +824,8 @@ def search_chunks(
     conn = get_db_conn()
     try:
         with conn.cursor(cursor_factory=RealDictCursor) as cur:
-            vector_rows: List[Dict[str, Any]] = []
-            lexical_rows: List[Dict[str, Any]] = []
+            vector_rows: list[dict[str, Any]] = []
+            lexical_rows: list[dict[str, Any]] = []
 
             if mode == "exact":
                 return _search_exact_candidates(

@@ -30,4 +30,3 @@ class RuntimeMetrics:
             f"invalid_mmsi={self.invalid_mmsi} invalid_payload={self.invalid_payload} "
             f"empty_name={self.empty_name} http_failures={self.http_failures}"
         )
-

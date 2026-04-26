@@ -26,6 +26,7 @@ import psycopg2
 import requests
 from bs4 import BeautifulSoup
 from common.http import fetch_page_with_retry
+from common.logging_setup import configure_scraper_logging
 from common.logging_utils import log_event
 from common.metrics import RuntimeMetrics
 from common.normalize import parse_int
@@ -33,7 +34,7 @@ from common.schema import validate_scraper_schema
 from common.upsert import source_priority_sql
 from PIL import Image
 
-logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+configure_scraper_logging("myshiptracking")
 
 # Глобальная сессия для переиспользования соединений
 session = requests.Session()
@@ -93,7 +94,9 @@ def sanitize_numeric(value, *, min_value=None, max_value=None):
     return ivalue
 
 
-def choose_worker_count(last_page_error_ratio: float, recent_retry_count: int) -> int:
+def choose_worker_count(
+    last_page_error_ratio: float, recent_retry_count: int
+) -> int:
     if last_page_error_ratio > 0.65 or recent_retry_count >= 20:
         return 2
     if last_page_error_ratio > 0.4 or recent_retry_count >= 12:
@@ -108,8 +111,12 @@ def choose_worker_count(last_page_error_ratio: float, recent_retry_count: int) -
 def validate_vessel_payload(vessel_data, metrics):
     vessel_data["name"] = normalize_vessel_name(vessel_data.get("name"))
     vessel_data["flag"] = normalize_label_text(vessel_data.get("flag"))
-    vessel_data["general_type"] = normalize_label_text(vessel_data.get("general_type"))
-    vessel_data["detailed_type"] = normalize_label_text(vessel_data.get("detailed_type"))
+    vessel_data["general_type"] = normalize_label_text(
+        vessel_data.get("general_type")
+    )
+    vessel_data["detailed_type"] = normalize_label_text(
+        vessel_data.get("detailed_type")
+    )
     vessel_data["mmsi"] = normalize_mmsi(vessel_data.get("mmsi"))
 
     if not vessel_data.get("name"):
@@ -120,12 +127,22 @@ def validate_vessel_payload(vessel_data, metrics):
         return False
 
     vessel_data["year_built"] = sanitize_numeric(
-        vessel_data.get("year_built"), min_value=1800, max_value=datetime.now().year + 1
+        vessel_data.get("year_built"),
+        min_value=1800,
+        max_value=datetime.now().year + 1,
     )
-    vessel_data["length"] = sanitize_numeric(vessel_data.get("length"), min_value=10, max_value=500)
-    vessel_data["width"] = sanitize_numeric(vessel_data.get("width"), min_value=2, max_value=90)
-    vessel_data["gt"] = sanitize_numeric(vessel_data.get("gt"), min_value=50, max_value=600000)
-    vessel_data["dwt"] = sanitize_numeric(vessel_data.get("dwt"), min_value=100, max_value=700000)
+    vessel_data["length"] = sanitize_numeric(
+        vessel_data.get("length"), min_value=10, max_value=500
+    )
+    vessel_data["width"] = sanitize_numeric(
+        vessel_data.get("width"), min_value=2, max_value=90
+    )
+    vessel_data["gt"] = sanitize_numeric(
+        vessel_data.get("gt"), min_value=50, max_value=600000
+    )
+    vessel_data["dwt"] = sanitize_numeric(
+        vessel_data.get("dwt"), min_value=100, max_value=700000
+    )
     return True
 
 
@@ -150,7 +167,9 @@ def download_image(photo_url, vessel_key):
 
     try:
         headers = {"User-Agent": random.choice(config.USER_AGENTS)}
-        r = session.get(photo_url, headers=headers, timeout=config.REQUEST_TIMEOUT)
+        r = session.get(
+            photo_url, headers=headers, timeout=config.REQUEST_TIMEOUT
+        )
         if r.status_code == 200:
             # Открыть изображение в памяти
             img = Image.open(io.BytesIO(r.content))
@@ -158,7 +177,9 @@ def download_image(photo_url, vessel_key):
             # Конвертировать в RGB (для JPEG)
             if img.mode in ("RGBA", "LA", "P"):
                 rgb_img = Image.new("RGB", img.size, (255, 255, 255))
-                rgb_img.paste(img, mask=img.split()[-1] if img.mode == "RGBA" else None)
+                rgb_img.paste(
+                    img, mask=img.split()[-1] if img.mode == "RGBA" else None
+                )
                 img = rgb_img
 
             # Сжать размер (макс 320x240)
@@ -217,7 +238,9 @@ def get_scraper_state(mode):
                 f"Loaded state for mode '{mode}': page {last_page}, vessels {vessels_count}"
             )
             return last_page, vessels_count
-        logging.info(f"No state found for mode '{mode}', starting from beginning")
+        logging.info(
+            f"No state found for mode '{mode}', starting from beginning"
+        )
         return 1, 0
     finally:
         cur.close()
@@ -282,7 +305,7 @@ def save_vessel(vessel):
         cur.execute(
             f"""
             INSERT INTO vessels (
-                name, imo, mmsi, call_sign, general_type, detailed_type, flag, 
+                name, imo, mmsi, call_sign, general_type, detailed_type, flag,
                 year_built, length, width, dwt, gt, home_port, photo_url, photo_path,
                 description, info_source, updated_at, vessel_key
             ) VALUES (
@@ -304,7 +327,7 @@ def save_vessel(vessel):
                 photo_url=COALESCE(EXCLUDED.photo_url, vessels.photo_url),
                 photo_path=COALESCE(EXCLUDED.photo_path, vessels.photo_path),
                 description=COALESCE(EXCLUDED.description, vessels.description),
-                info_source=CASE 
+                info_source=CASE
                     WHEN {existing_prio} <= {incoming_prio} THEN vessels.info_source
                     ELSE EXCLUDED.info_source
                 END,
@@ -333,7 +356,9 @@ def save_vessel(vessel):
             ),
         )
         conn.commit()
-        logging.info(f"Saved vessel: {vessel.get('name')} (MMSI: {vessel.get('mmsi')})")
+        logging.info(
+            f"Saved vessel: {vessel.get('name')} (MMSI: {vessel.get('mmsi')})"
+        )
         return True
     except Exception as e:
         logging.error(f"Error saving vessel {vessel.get('name')}: {e}")
@@ -357,6 +382,7 @@ def fetch_page(url, metrics=None):
     - Текст HTML или None при неудаче после `config.MAX_RETRIES`.
     - Специальное значение "404_NOT_FOUND" при ошибке 404 (для пропуска страницы).
     """
+
     def _on_retry(_url, _attempt, _max_attempts, _kind):
         if metrics is not None:
             metrics.retry_count += 1
@@ -421,20 +447,28 @@ def parse_vessel_list_page(html):
                     else:
                         vessel_url = "https://www.myshiptracking.com" + href
             else:
-                vessel_name = normalize_vessel_name(name_cell.get_text(strip=True))
+                vessel_name = normalize_vessel_name(
+                    name_cell.get_text(strip=True)
+                )
 
         # Извлечь MMSI
-        vessel_mmsi = normalize_mmsi(mmsi_cell.get_text(strip=True) if mmsi_cell else None)
+        vessel_mmsi = normalize_mmsi(
+            mmsi_cell.get_text(strip=True) if mmsi_cell else None
+        )
 
         # Извлечь тип судна
-        vessel_type = normalize_label_text(type_cell.get_text(strip=True) if type_cell else None)
+        vessel_type = normalize_label_text(
+            type_cell.get_text(strip=True) if type_cell else None
+        )
 
         # Извлечь флаг из img или title атрибута в первой ячейке
         vessel_flag = None
         if name_cell:
             flag_img = name_cell.find("img", {"title": True})
             if flag_img:
-                vessel_flag = normalize_label_text(flag_img.get("title", "").strip())
+                vessel_flag = normalize_label_text(
+                    flag_img.get("title", "").strip()
+                )
 
         # Пропустить строки без имени или MMSI
         if not vessel_name or not vessel_mmsi:
@@ -508,20 +542,30 @@ def parse_vessel_detail_page(html, vessel_data):
         )
 
     # Извлечь размеры (формат: Size | 183 x 32 m)
-    size_match = re.search(r"Size\s*\|\s*(\d+)\s*x\s*(\d+)", text, re.IGNORECASE)
+    size_match = re.search(
+        r"Size\s*\|\s*(\d+)\s*x\s*(\d+)", text, re.IGNORECASE
+    )
     if size_match:
-        vessel_data["length"] = sanitize_numeric(size_match.group(1), min_value=10, max_value=500)
-        vessel_data["width"] = sanitize_numeric(size_match.group(2), min_value=2, max_value=90)
+        vessel_data["length"] = sanitize_numeric(
+            size_match.group(1), min_value=10, max_value=500
+        )
+        vessel_data["width"] = sanitize_numeric(
+            size_match.group(2), min_value=2, max_value=90
+        )
 
     # Извлечь DWT (формат: DWT | 46,219 Tons)
     dwt = extract_field(r"DWT\s*\|\s*([\d,]+)")
     if dwt:
-        vessel_data["dwt"] = sanitize_numeric(dwt, min_value=100, max_value=700000)
+        vessel_data["dwt"] = sanitize_numeric(
+            dwt, min_value=100, max_value=700000
+        )
 
     # Извлечь GT (формат: GT | 30,024 Tons)
     gt = extract_field(r"GT\s*\|\s*([\d,]+)")
     if gt:
-        vessel_data["gt"] = sanitize_numeric(gt, min_value=50, max_value=600000)
+        vessel_data["gt"] = sanitize_numeric(
+            gt, min_value=50, max_value=600000
+        )
 
     # Извлечь тип из подзаголовка (например "Oil/Chemical Tanker")
     detailed_type = None
@@ -602,7 +646,9 @@ def process_vessel(vessel_data, metrics, detail_cache, cache_lock):
                 with cache_lock:
                     detail_cache[vessel_data["url"]] = detail_html
             if detail_html:
-                vessel_data = parse_vessel_detail_page(detail_html, vessel_data)
+                vessel_data = parse_vessel_detail_page(
+                    detail_html, vessel_data
+                )
 
         if not validate_vessel_payload(vessel_data, metrics):
             metrics.invalid_payload += 1
@@ -625,7 +671,9 @@ def process_vessel(vessel_data, metrics, detail_cache, cache_lock):
             )
             return True
     except Exception as e:
-        logging.error(f"Error processing vessel {vessel_data.get('name')}: {e}")
+        logging.error(
+            f"Error processing vessel {vessel_data.get('name')}: {e}"
+        )
     return False
 
 
@@ -702,7 +750,9 @@ def main():
 
             # Построить URL для текущей страницы
             if current_page == 1:
-                url = f"{config.BASE_URL}?ajax=true&pp={config.VESSELS_PER_PAGE}"
+                url = (
+                    f"{config.BASE_URL}?ajax=true&pp={config.VESSELS_PER_PAGE}"
+                )
             else:
                 url = f"{config.BASE_URL}?ajax=true&pp={config.VESSELS_PER_PAGE}&page={current_page}"
 
@@ -741,7 +791,9 @@ def main():
 
             workers = choose_worker_count(
                 last_page_error_ratio=last_page_error_ratio,
-                recent_retry_count=max(metrics.retry_count - retry_count_before_page, 0),
+                recent_retry_count=max(
+                    metrics.retry_count - retry_count_before_page, 0
+                ),
             )
             logging.info(
                 f"Found {len(vessels)} vessels on page {current_page}. Processing with {workers} threads..."
@@ -756,7 +808,13 @@ def main():
                     if max_vessels and vessels_processed >= max_vessels:
                         break
                     futures.append(
-                        executor.submit(process_vessel, vessel_data, metrics, detail_cache, detail_cache_lock)
+                        executor.submit(
+                            process_vessel,
+                            vessel_data,
+                            metrics,
+                            detail_cache,
+                            detail_cache_lock,
+                        )
                     )
 
                 for future in as_completed(futures):
@@ -764,7 +822,9 @@ def main():
                     try:
                         result = bool(future.result())
                     except Exception as exc:
-                        logging.error(f"Worker error on page {current_page}: {exc}")
+                        logging.error(
+                            f"Worker error on page {current_page}: {exc}"
+                        )
                     metrics.vessels_parsed += 1
                     page_processed += 1
                     if result:
@@ -773,11 +833,17 @@ def main():
                         vessels_processed += 1
                         metrics.vessels_saved += 1
                         if total_saved % checkpoint_every_saved == 0:
-                            save_scraper_state(mode, current_page, vessels_processed)
+                            save_scraper_state(
+                                mode, current_page, vessels_processed
+                            )
 
             if page_processed:
                 last_page_error_ratio = max(
-                    0.0, min(1.0, (page_processed - page_saved) / float(page_processed))
+                    0.0,
+                    min(
+                        1.0,
+                        (page_processed - page_saved) / float(page_processed),
+                    ),
                 )
             retry_count_before_page = metrics.retry_count
 
@@ -807,7 +873,9 @@ def main():
                 time.sleep(break_time)
 
             # Задержка между страницами
-            delay = random.uniform(config.REQUEST_DELAY_MIN, config.REQUEST_DELAY_MAX)
+            delay = random.uniform(
+                config.REQUEST_DELAY_MIN, config.REQUEST_DELAY_MAX
+            )
             time.sleep(delay)
 
     except KeyboardInterrupt:

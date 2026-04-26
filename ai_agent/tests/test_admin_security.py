@@ -1,9 +1,11 @@
-from pathlib import Path
 import sys
+from pathlib import Path
 
 from fastapi.testclient import TestClient
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+_REPO_ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(_REPO_ROOT))
+sys.path.insert(0, str(_REPO_ROOT / "ai_agent"))
 import app as ai_app
 
 
@@ -30,6 +32,8 @@ def test_ingest_allows_valid_api_key(monkeypatch):
     )
     client = TestClient(ai_app.app)
 
-    resp = client.post("/ingest/run", json={}, headers={"x-api-key": "secret-token"})
+    resp = client.post(
+        "/ingest/run", json={}, headers={"x-api-key": "secret-token"}
+    )
     assert resp.status_code == 200
     assert resp.json()["job_id"] == 1

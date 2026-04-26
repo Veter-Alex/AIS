@@ -2,16 +2,14 @@ FROM python:3.11-slim
 
 WORKDIR /app
 
-# Установить зависимости
-COPY requirements.txt .
+COPY myshiptracking/requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Скопировать код скрапера
-COPY config.py .
-COPY scraper.py .
+COPY myshiptracking/scraper.py myshiptracking/config.py ./
+COPY common ./common
 
-# Создать каталог для изображений (если понадобится в будущем)
+ENV PYTHONPATH=/app
+
 RUN mkdir -p /app/images
 
-# Запустить скрапер
 CMD ["python", "scraper.py"]

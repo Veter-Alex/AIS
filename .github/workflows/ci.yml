@@ -6,14 +6,40 @@ on:
   pull_request:
 
 jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Ruff
+        run: |
+          python -m pip install --upgrade pip
+          pip install ruff
+          ruff check .
+          ruff format --check .
+
+  frontend-build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: vessel_frontend/package-lock.json
+      - name: Build vessel_frontend
+        working-directory: vessel_frontend
+        run: |
+          npm ci
+          npm run build
+
   python-tests:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Setup Python
-        uses: actions/setup-python@v5
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
 
@@ -29,24 +55,86 @@ jobs:
           pip install pytest
 
       - name: Run scraper parser tests
+        env:
+          PYTHONPATH: ${{ github.workspace }}
         run: pytest AIS_scrapers/tests/test_parser_smoke.py -q
 
       - name: Run vessel_api tests
+        env:
+          PYTHONPATH: ${{ github.workspace }}
         working-directory: vessel_api
         run: pytest tests -q
 
       - name: Run ai_agent tests
+        env:
+          PYTHONPATH: ${{ github.workspace }}
         working-directory: ai_agent
         run: pytest tests -q
+
+  vessel-api-db-integration:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: pgvector/pgvector:pg15
+        env:
+          POSTGRES_USER: user
+          POSTGRES_PASSWORD: password
+          POSTGRES_DB: vessels_db
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U user -d vessels_db"
+          --health-start-period 15s
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r vessel_api/requirements.txt
+          pip install pytest
+      - name: Apply Alembic migrations
+        env:
+          POSTGRES_HOST: localhost
+          POSTGRES_PORT: "5432"
+          POSTGRES_USER: user
+          POSTGRES_PASSWORD: password
+          POSTGRES_DB: vessels_db
+        run: alembic upgrade head
+      - name: Run vessel_api DB integration tests
+        env:
+          PYTHONPATH: ${{ github.workspace }}:${{ github.workspace }}/vessel_api
+          POSTGRES_HOST: localhost
+          POSTGRES_PORT: "5432"
+          POSTGRES_USER: user
+          POSTGRES_PASSWORD: password
+          POSTGRES_DB: vessels_db
+          RUN_DB_INTEGRATION_TESTS: "1"
+        working-directory: vessel_api
+        run: pytest tests/test_db_integration.py -q
 
   docker-smoke-build:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
       - name: Build vessel_api image
-        run: docker build -t ais-vessel_api-ci ./vessel_api
+        run: docker build -f vessel_api/Dockerfile -t ais-vessel_api-ci .
 
       - name: Build ai_agent image
-        run: docker build -t ais-ai_agent-ci ./ai_agent
+        run: docker build -f ai_agent/Dockerfile -t ais-ai_agent-ci .
+
+      - name: Build marinetraffic scraper image
+        run: |
+          docker build -f AIS_scrapers/marinetraffic/Dockerfile \
+            -t ais-marinetraffic-ci ./AIS_scrapers
+
+      - name: Build myshiptracking scraper image
+        run: |
+          docker build -f AIS_scrapers/myshiptracking/Dockerfile \
+            -t ais-myshiptracking-ci ./AIS_scrapers

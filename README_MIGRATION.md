@@ -7,13 +7,19 @@
 ```
 E:\Programming\Projects\Python\AIS\
 ├── data/
-│   ├── postgres/          # База данных PostgreSQL
+│   ├── postgres/          # База данных PostgreSQL (том Docker)
 │   └── vessel_images/     # Фотографии судов
 ├── docker-compose.yml
-├── init.sql
+├── alembic/                 # Миграции схемы БД (применяются при старте vessel_api)
+├── alembic.ini
+├── init.sql                 # Справочно; схема из docker-compose задаётся через Alembic
+├── ais_shared/            # Общий код API (пул БД, логи)
 ├── vessel_api/
-└── vesselfinder_scraper/
+├── ai_agent/
+└── AIS_scrapers/
 ```
+
+Схема (`vessels`, `source_priority`, `scraper_state`, `ai.*`) накатывается командой **`alembic upgrade head`** (автоматически в контейнере `vessel_api` при `docker compose up`). При переносе каталога `data/postgres/` на новую машину **миграции уже «внутри» данных**; на чистой БД перед первым запуском API нужно один раз выполнить миграции (см. `README_DB.txt`).
 
 ## Подготовка к переносу (на машине с интернетом)
 
@@ -36,10 +42,10 @@ Compress-Archive -Path . -DestinationPath ais_full_backup.zip -Exclude data,__py
 # Создать папку для образов
 New-Item -ItemType Directory -Force -Path docker_images
 
-# Сохранить образы
-docker save postgres:15 -o docker_images/postgres_15.tar
-docker save ais-vesselfinder_scraper:latest -o docker_images/scraper.tar
-docker save ais-vessel_api:latest -o docker_images/api.tar
+# Сохранить образы (имена тегов подставьте из docker images)
+docker save pgvector/pgvector:pg15 -o docker_images/pgvector_pg15.tar
+docker save ais-vessel_api:latest -o docker_images/vessel_api.tar
+docker save ais-ai_agent:latest -o docker_images/ai_agent.tar
 
 # Архивировать образы
 Compress-Archive -Path docker_images -DestinationPath docker_images.zip
@@ -70,9 +76,9 @@ Expand-Archive -Path docker_images.zip -DestinationPath .
 
 ### 3. Загрузить Docker образы
 ```powershell
-docker load -i docker_images/postgres_15.tar
-docker load -i docker_images/scraper.tar
-docker load -i docker_images/api.tar
+docker load -i docker_images/pgvector_pg15.tar
+docker load -i docker_images/vessel_api.tar
+docker load -i docker_images/ai_agent.tar
 ```
 
 ### 4. Запустить контейнеры

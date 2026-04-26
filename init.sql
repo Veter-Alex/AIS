@@ -1,3 +1,7 @@
+-- УСТАРЕЛО: схема применяется через Alembic (`alembic upgrade head`).
+-- Файл сохранён для справки и ручного запуска; docker-compose больше не монтирует
+-- его в postgres. Для новой БД используйте миграции из каталога alembic/.
+
 -- SQL для создания таблицы vessels
 CREATE TABLE IF NOT EXISTS vessels (
     id SERIAL PRIMARY KEY,

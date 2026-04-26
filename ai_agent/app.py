@@ -3,23 +3,29 @@ import json
 import logging
 import os
 import time
-from typing import Any, Dict, List, Optional
+from typing import Any
 
-from db import get_db_cursor
 from fastapi import FastAPI, Header, HTTPException, Request
 from fastapi.responses import JSONResponse
 from psycopg2.extras import RealDictCursor
 from pydantic import BaseModel
-from services.ingestion import list_ingestion_jobs, run_ingestion, search_chunks
+from services.ingestion import (
+    list_ingestion_jobs,
+    run_ingestion,
+    search_chunks,
+)
+
+from ais_shared.db import get_db_cursor
+from ais_shared.log_setup import configure_service_logging
 
 
 def _generate_answer_with_llm(
     question: str,
-    chunks: List[Dict[str, Any]],
+    chunks: list[dict[str, Any]],
     max_chars: int,
-    provider: Optional[str],
-    model: Optional[str],
-) -> Dict[str, str]:
+    provider: str | None,
+    model: str | None,
+) -> dict[str, str]:
     llm_module = importlib.import_module("services.llm")
     return llm_module.generate_answer(
         question=question,
@@ -58,9 +64,10 @@ app = FastAPI(
     default_response_class=Utf8JSONResponse,
 )
 logger = logging.getLogger(__name__)
+configure_service_logging("ai_agent")
 ADMIN_API_KEY = os.getenv("ADMIN_API_KEY", "").strip()
 ADMIN_RATE_LIMIT_PER_MIN = int(os.getenv("ADMIN_RATE_LIMIT_PER_MIN", "30"))
-_ADMIN_RATE_STATE: Dict[str, List[float]] = {}
+_ADMIN_RATE_STATE: dict[str, list[float]] = {}
 
 
 def _raise_internal_error(exc: Exception, context: str) -> None:
@@ -71,8 +78,8 @@ def _raise_internal_error(exc: Exception, context: str) -> None:
 def _enforce_admin_security(
     request: Request,
     endpoint: str,
-    x_api_key: Optional[str] = None,
-    authorization: Optional[str] = None,
+    x_api_key: str | None = None,
+    authorization: str | None = None,
 ) -> None:
     if ADMIN_API_KEY:
         bearer_token = ""
@@ -100,7 +107,7 @@ class ChatRequest(BaseModel):
     # По умолчанию 10.
     # Это также первый элемент защиты от слишком тяжелых запросов.
     # Позже здесь стоит добавить строгие границы, например не больше 20-50 записей.
-    limit: Optional[int] = 10
+    limit: int | None = 10
 
 
 class ChatResponse(BaseModel):
@@ -115,7 +122,7 @@ class ChatResponse(BaseModel):
     # Сырые строки из БД, которые использовались для ответа.
     # На этапе разработки это особенно полезно: можно видеть, откуда берутся факты.
     # В продакшене вместо полных rows часто возвращают citations или краткие источники.
-    rows: List[Dict[str, Any]]
+    rows: list[dict[str, Any]]
 
 
 class IngestRequest(BaseModel):
@@ -124,11 +131,11 @@ class IngestRequest(BaseModel):
     # Удобно для первых тестов:
     # - limit=10 для быстрой проверки pipeline;
     # - limit=None для полной индексации всей таблицы vessels.
-    limit: Optional[int] = None
+    limit: int | None = None
     # Delta-режим: индексируем только изменившиеся записи.
-    incremental: Optional[bool] = False
+    incremental: bool | None = False
     # Явная нижняя граница updated_at в ISO-формате.
-    updated_after: Optional[str] = None
+    updated_after: str | None = None
 
 
 class IngestResponse(BaseModel):
@@ -146,22 +153,22 @@ class IngestionJobsResponse(BaseModel):
     # Количество jobs в ответе.
     total: int
     # Сырые записи из ai.ingestion_jobs.
-    jobs: List[Dict[str, Any]]
+    jobs: list[dict[str, Any]]
 
 
 class ChunkSearchRequest(BaseModel):
     # Текст, который ищем внутри ai.chunks.content.
     query: str
     # Количество результатов в выдаче.
-    limit: Optional[int] = 5
+    limit: int | None = 5
     # Режим поиска:
     # - hybrid: сначала vector, затем lexical fallback;
     # - vector: только vector similarity;
     # - lexical: только ILIKE/token search.
-    mode: Optional[str] = "hybrid"
+    mode: str | None = "hybrid"
     # Максимально допустимая vector distance.
     # Если указано значение, слишком далекие vector-совпадения будут отброшены.
-    max_distance: Optional[float] = None
+    max_distance: float | None = None
 
 
 class ChunkSearchResponse(BaseModel):
@@ -172,20 +179,20 @@ class ChunkSearchResponse(BaseModel):
     # Количество найденных результатов в этом ответе.
     total: int
     # Список найденных chunks с метаданными документа.
-    results: List[Dict[str, Any]]
+    results: list[dict[str, Any]]
 
 
 class RetrievalDiagnosticsRequest(BaseModel):
     # Вопрос для анализа retrieval-пайплайна.
     question: str
     # Режим retrieval: hybrid, vector, lexical, exact.
-    retrieval_mode: Optional[str] = "hybrid"
+    retrieval_mode: str | None = "hybrid"
     # Финальный размер ответа после всех этапов.
-    top_k: Optional[int] = 5
+    top_k: int | None = 5
     # Размер кандидатов до reranking.
-    candidate_limit: Optional[int] = 20
+    candidate_limit: int | None = 20
     # Порог по vector distance.
-    max_distance: Optional[float] = None
+    max_distance: float | None = None
 
 
 class RetrievalDiagnosticsResponse(BaseModel):
@@ -210,28 +217,28 @@ class RetrievalDiagnosticsResponse(BaseModel):
     # Количество элементов в итоговом top-k.
     final_count: int
     # Кандидаты сразу после retrieval.
-    candidates: List[Dict[str, Any]]
+    candidates: list[dict[str, Any]]
     # Результат reranking (или тот же список для vector-only).
-    reranked: List[Dict[str, Any]]
+    reranked: list[dict[str, Any]]
     # Итоговый top-k.
-    final: List[Dict[str, Any]]
+    final: list[dict[str, Any]]
 
 
 class RagAnswerRequest(BaseModel):
     # Вопрос пользователя, на который нужно дать ответ по найденным chunks.
     question: str
     # Сколько chunks максимум использовать как контекст.
-    top_k: Optional[int] = 5
+    top_k: int | None = 5
     # Максимальный размер итогового ответа в символах.
-    max_answer_chars: Optional[int] = 1200
+    max_answer_chars: int | None = 1200
     # Режим retrieval для мини-RAG.
-    retrieval_mode: Optional[str] = "hybrid"
+    retrieval_mode: str | None = "hybrid"
     # Порог для vector distance.
-    max_distance: Optional[float] = None
+    max_distance: float | None = None
     # Провайдер генерации ответа: mock или ollama.
-    llm_provider: Optional[str] = None
+    llm_provider: str | None = None
     # Имя модели LLM (например, llama3.2:3b, qwen2.5:7b).
-    llm_model: Optional[str] = None
+    llm_model: str | None = None
 
 
 class RagAnswerResponse(BaseModel):
@@ -248,7 +255,7 @@ class RagAnswerResponse(BaseModel):
     # Количество реально использованных chunks.
     used_chunks: int
     # Источники, чтобы можно было проверить происхождение фактов.
-    sources: List[Dict[str, Any]]
+    sources: list[dict[str, Any]]
 
 
 class LlmRuntimeResponse(BaseModel):
@@ -257,15 +264,15 @@ class LlmRuntimeResponse(BaseModel):
     # Модель, сконфигурированная через переменные окружения.
     configured_model: str
     # Доступные модели в провайдере (для Ollama: локально загруженные модели).
-    available_models: List[str]
+    available_models: list[str]
     # Расширенные метаданные по каждой модели.
-    available_models_info: List[Dict[str, Any]]
+    available_models_info: list[dict[str, Any]]
     # Квантование модели из конфигурации LLM_MODEL (если модель найдена локально).
-    configured_model_quantization: Optional[str] = None
+    configured_model_quantization: str | None = None
     # Доступен ли Ollama runtime по сети.
     ollama_reachable: bool
     # Текст ошибки для диагностики, если runtime недоступен.
-    error: Optional[str] = None
+    error: str | None = None
 
 
 class LlmPullRequest(BaseModel):
@@ -281,7 +288,7 @@ class LlmPullResponse(BaseModel):
     # Итоговый статус операции.
     status: str
     # Сырой ответ провайдера для диагностики.
-    detail: Dict[str, Any]
+    detail: dict[str, Any]
 
 
 class LlmDeleteRequest(BaseModel):
@@ -297,10 +304,10 @@ class LlmDeleteResponse(BaseModel):
     # Итоговый статус операции.
     status: str
     # Сырой ответ провайдера для диагностики.
-    detail: Dict[str, Any]
+    detail: dict[str, Any]
 
 
-def _normalize_retrieval_mode(mode: Optional[str]) -> str:
+def _normalize_retrieval_mode(mode: str | None) -> str:
     # Нормализуем пользовательский режим retrieval.
     # Если пришло неизвестное значение, безопасно откатываемся в hybrid.
     value = (mode or "hybrid").strip().lower()
@@ -311,16 +318,18 @@ def _normalize_retrieval_mode(mode: Optional[str]) -> str:
 
 def _extract_relevant_lines(
     content: str, question: str, max_lines: int = 4
-) -> List[str]:
+) -> list[str]:
     # Простой extractive-алгоритм:
     # берем строки из chunk, где встречается слово из вопроса.
     # Если совпадений нет, возвращаем первые информативные строки профиля.
     q_tokens = {
-        t.strip(" ,.:;!?()[]{}\"'").lower() for t in question.split() if t.strip()
+        t.strip(" ,.:;!?()[]{}\"'").lower()
+        for t in question.split()
+        if t.strip()
     }
     lines = [line.strip() for line in content.splitlines() if line.strip()]
 
-    matched: List[str] = []
+    matched: list[str] = []
     for line in lines:
         low = line.lower()
         if any(token and token in low for token in q_tokens):
@@ -335,7 +344,7 @@ def _extract_relevant_lines(
     return lines[:max_lines]
 
 
-def _tokenize_query(text: str) -> List[str]:
+def _tokenize_query(text: str) -> list[str]:
     # Унифицированная токенизация запроса для reranking.
     #
     # Почему это важно:
@@ -347,7 +356,7 @@ def _tokenize_query(text: str) -> List[str]:
     return list(dict.fromkeys(tokens))[:12]
 
 
-def _extract_numeric_query_tokens(text: str) -> List[str]:
+def _extract_numeric_query_tokens(text: str) -> list[str]:
     # Отдельно выделяем длинные числовые токены, похожие на IMO/MMSI.
     raw_tokens = [t.strip(" ,.:;!?()[]{}\"'") for t in text.split()]
     tokens = [t for t in raw_tokens if t.isdigit() and len(t) >= 6]
@@ -358,7 +367,7 @@ def _expand_query_for_retrieval(text: str) -> str:
     # Добавляем англоязычные синонимы к частым русским доменным словам,
     # чтобы lexical/general_type-поиск корректно работал при русских запросах.
     lower = text.lower()
-    extra_terms: List[str] = []
+    extra_terms: list[str] = []
 
     if any(term in lower for term in ["пассажир", "круиз", "паром"]):
         extra_terms.extend(["passenger", "cruise", "ferry"])
@@ -374,13 +383,15 @@ def _expand_query_for_retrieval(text: str) -> str:
 
     # Не дублируем уже имеющиеся токены в вопросе.
     original_tokens = set(_tokenize_query(text))
-    unique_extras = [term for term in extra_terms if term not in original_tokens]
+    unique_extras = [
+        term for term in extra_terms if term not in original_tokens
+    ]
     if not unique_extras:
         return text
     return f"{text} {' '.join(unique_extras)}"
 
 
-def _distance_sort_value(item: Dict[str, Any]) -> float:
+def _distance_sort_value(item: dict[str, Any]) -> float:
     # Для lexical-only результатов distance может отсутствовать.
     distance = item.get("distance")
     if distance is None:
@@ -388,7 +399,9 @@ def _distance_sort_value(item: Dict[str, Any]) -> float:
     return float(distance)
 
 
-def _rerank_chunks(question: str, chunks: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+def _rerank_chunks(
+    question: str, chunks: list[dict[str, Any]]
+) -> list[dict[str, Any]]:
     # Простой lexical reranking без внешней модели.
     #
     # Стратегия:
@@ -405,14 +418,16 @@ def _rerank_chunks(question: str, chunks: List[Dict[str, Any]]) -> List[Dict[str
     if not q_tokens:
         q_tokens = []
 
-    ranked: List[Dict[str, Any]] = []
+    ranked: list[dict[str, Any]] = []
     for item in chunks:
         title = str(item.get("title") or "").lower()
         content = str(item.get("content") or "").lower()
         document_imo = str(item.get("document_imo") or "")
         document_mmsi = str(item.get("document_mmsi") or "")
         document_flag = str(item.get("document_flag") or "").lower()
-        document_general_type = str(item.get("document_general_type") or "").lower()
+        document_general_type = str(
+            item.get("document_general_type") or ""
+        ).lower()
         lexical_score = int(item.get("lexical_score") or 0)
 
         title_hits = sum(1 for tok in q_tokens if tok in title)
@@ -425,7 +440,7 @@ def _rerank_chunks(question: str, chunks: List[Dict[str, Any]]) -> List[Dict[str
         exact_id_hits = sum(
             30
             for tok in q_numeric_tokens
-            if tok == document_imo or tok == document_mmsi
+            if tok in (document_imo, document_mmsi)
         )
 
         score = (
@@ -453,7 +468,7 @@ def _rerank_chunks(question: str, chunks: List[Dict[str, Any]]) -> List[Dict[str
 
 
 def _build_rag_answer(
-    question: str, chunks: List[Dict[str, Any]], max_chars: int
+    question: str, chunks: list[dict[str, Any]], max_chars: int
 ) -> str:
     # Формируем понятный ответ из найденных chunks.
     #
@@ -468,7 +483,7 @@ def _build_rag_answer(
             "Попробуйте уточнить запрос или расширить индексацию."
         )
 
-    parts: List[str] = ["Найденный контекст по вашему вопросу:"]
+    parts: list[str] = ["Найденный контекст по вашему вопросу:"]
     for idx, chunk in enumerate(chunks, start=1):
         title = (chunk.get("title") or "Unknown vessel").strip()
         lines = _extract_relevant_lines(chunk.get("content") or "", question)
@@ -516,7 +531,7 @@ def route_strategy(question: str) -> str:
     return "semantic_stub"
 
 
-def run_sql_lookup(question: str, limit: int) -> List[Dict[str, Any]]:
+def run_sql_lookup(question: str, limit: int) -> list[dict[str, Any]]:
     # Выполняем SQL-поиск по базе.
     # Важно: используем параметризованные запросы (%s), чтобы исключить SQL-инъекции.
     #
@@ -528,48 +543,48 @@ def run_sql_lookup(question: str, limit: int) -> List[Dict[str, Any]]:
     # {"name": "...", "imo": "..."} вместо кортежей.
     # Это удобно как для JSON API, так и для будущей передачи данных в LLM-контекст.
     with get_db_cursor(cursor_factory=RealDictCursor) as cur:
-            # Специальная ветка для вопросов с IMO.
-            # Логика простая: ищем первое "похожее на номер" число в тексте.
-            # Это пример детерминированного сценария: если вопрос точный,
-            # не нужно притворяться "умным" поиском, лучше делать точный lookup.
-            if "imo" in q:
-                parts = q.replace("?", " ").split()
-                imo_value = None
-                for p in parts:
-                    # Минимальная эвристика: только цифры и длина от 6 символов.
-                    # Можно улучшить до строгой проверки IMO формата.
-                    # Позже имеет смысл вынести это в отдельную validate-функцию.
-                    if p.isdigit() and len(p) >= 6:
-                        imo_value = p
-                        break
-                if not imo_value:
-                    return []
+        # Специальная ветка для вопросов с IMO.
+        # Логика простая: ищем первое "похожее на номер" число в тексте.
+        # Это пример детерминированного сценария: если вопрос точный,
+        # не нужно притворяться "умным" поиском, лучше делать точный lookup.
+        if "imo" in q:
+            parts = q.replace("?", " ").split()
+            imo_value = None
+            for p in parts:
+                # Минимальная эвристика: только цифры и длина от 6 символов.
+                # Можно улучшить до строгой проверки IMO формата.
+                # Позже имеет смысл вынести это в отдельную validate-функцию.
+                if p.isdigit() and len(p) >= 6:
+                    imo_value = p
+                    break
+            if not imo_value:
+                return []
 
-                cur.execute(
-                    """
+            cur.execute(
+                """
                     SELECT name, imo, mmsi, flag, general_type, year_built, dwt, gt
                     FROM vessels
                     WHERE imo = %s
                     LIMIT %s
                     """,
-                    (imo_value, limit),
-                )
-                return cur.fetchall()
+                (imo_value, limit),
+            )
+            return cur.fetchall()
 
-            # Общий fallback-поиск:
-            # ищем текст вопроса в имени судна, типе и флаге.
-            # Это не полноценный semantic search, но полезный базовый режим.
-            #
-            # Именно этот участок позже можно заменить на гибридную схему:
-            # 1. сначала SQL-фильтрация по явным условиям;
-            # 2. потом векторный поиск по embeddings;
-            # 3. потом reranking лучших результатов.
-            #
-            # Для pgvector это будет одно из основных мест интеграции.
-            # Обычно рядом появляется отдельная таблица вида ai.vessel_chunks,
-            # где хранится текстовый профиль судна и embedding-вектор.
-            cur.execute(
-                """
+        # Общий fallback-поиск:
+        # ищем текст вопроса в имени судна, типе и флаге.
+        # Это не полноценный semantic search, но полезный базовый режим.
+        #
+        # Именно этот участок позже можно заменить на гибридную схему:
+        # 1. сначала SQL-фильтрация по явным условиям;
+        # 2. потом векторный поиск по embeddings;
+        # 3. потом reranking лучших результатов.
+        #
+        # Для pgvector это будет одно из основных мест интеграции.
+        # Обычно рядом появляется отдельная таблица вида ai.vessel_chunks,
+        # где хранится текстовый профиль судна и embedding-вектор.
+        cur.execute(
+            """
                 SELECT name, imo, mmsi, flag, general_type, year_built, dwt, gt
                 FROM vessels
                 WHERE
@@ -579,9 +594,9 @@ def run_sql_lookup(question: str, limit: int) -> List[Dict[str, Any]]:
                 ORDER BY updated_at DESC NULLS LAST
                 LIMIT %s
                 """,
-                (f"%{question}%", f"%{question}%", f"%{question}%", limit),
-            )
-            return cur.fetchall()
+            (f"%{question}%", f"%{question}%", f"%{question}%", limit),
+        )
+        return cur.fetchall()
 
 
 @app.get("/health")
@@ -594,7 +609,7 @@ def health():
 
 
 @app.get("/llm/models", response_model=LlmRuntimeResponse)
-def llm_models(provider: Optional[str] = None):
+def llm_models(provider: str | None = None):
     # Возвращаем runtime-диагностику LLM-провайдера и список доступных моделей.
     # provider можно передать как query-параметр, например: ?provider=ollama
     try:
@@ -608,8 +623,8 @@ def llm_models(provider: Optional[str] = None):
 def llm_pull_model(
     req: LlmPullRequest,
     request: Request,
-    x_api_key: Optional[str] = Header(default=None),
-    authorization: Optional[str] = Header(default=None),
+    x_api_key: str | None = Header(default=None),
+    authorization: str | None = Header(default=None),
 ):
     # Загружает модель в Ollama runtime по имени.
     # Полезно для удаленного развертывания без ручного docker exec.
@@ -625,7 +640,7 @@ def llm_pull_model(
     except HTTPException:
         raise
     except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+        raise HTTPException(status_code=400, detail=str(e)) from e
     except Exception as e:
         _raise_internal_error(e, "llm_pull_model")
 
@@ -634,8 +649,8 @@ def llm_pull_model(
 def llm_delete_model(
     req: LlmDeleteRequest,
     request: Request,
-    x_api_key: Optional[str] = Header(default=None),
-    authorization: Optional[str] = Header(default=None),
+    x_api_key: str | None = Header(default=None),
+    authorization: str | None = Header(default=None),
 ):
     # Удаляет модель из Ollama runtime по имени.
     # Если модель не найдена, возвращаем 404.
@@ -651,12 +666,12 @@ def llm_delete_model(
     except HTTPException:
         raise
     except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+        raise HTTPException(status_code=400, detail=str(e)) from e
     except Exception as e:
         status_code = getattr(e, "status_code", 500)
         if status_code >= 500:
             _raise_internal_error(e, "llm_delete_model")
-        raise HTTPException(status_code=status_code, detail=str(e))
+        raise HTTPException(status_code=status_code, detail=str(e)) from e
 
 
 @app.post("/chat", response_model=ChatResponse)
@@ -728,8 +743,8 @@ def chat(req: ChatRequest):
 def ingest_run(
     req: IngestRequest,
     request: Request,
-    x_api_key: Optional[str] = Header(default=None),
-    authorization: Optional[str] = Header(default=None),
+    x_api_key: str | None = Header(default=None),
+    authorization: str | None = Header(default=None),
 ):
     # Ручной запуск индексации данных судов в ai-схему.
     #
@@ -827,7 +842,9 @@ def retrieve_diagnostics(req: RetrievalDiagnosticsRequest):
         if mode in {"vector", "exact"}:
             reranked = candidates
         else:
-            reranked = _rerank_chunks(question=retrieval_query, chunks=candidates)
+            reranked = _rerank_chunks(
+                question=retrieval_query, chunks=candidates
+            )
 
         final = reranked[:top_k]
         reranked_count = len(reranked)
@@ -882,7 +899,9 @@ def rag_answer(req: RagAnswerRequest):
         if mode in {"vector", "exact"}:
             chunks = candidates[:top_k]
         else:
-            reranked = _rerank_chunks(question=retrieval_query, chunks=candidates)
+            reranked = _rerank_chunks(
+                question=retrieval_query, chunks=candidates
+            )
             chunks = reranked[:top_k]
 
         llm_result = _generate_answer_with_llm(

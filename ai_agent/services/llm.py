@@ -1,6 +1,6 @@
 import json
 import os
-from typing import Any, Dict, List, Optional
+from typing import Any
 from urllib import error, request
 
 # LLM-сервис для AI-агента.
@@ -15,7 +15,9 @@ from urllib import error, request
 # - акцент на причины решений (почему так), а не на очевидный синтаксис.
 DEFAULT_LLM_PROVIDER = os.getenv("LLM_PROVIDER", "mock")
 DEFAULT_LLM_MODEL = os.getenv("LLM_MODEL", "llama3.2:3b")
-OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://ollama:11434").rstrip("/")
+OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://ollama:11434").rstrip(
+    "/"
+)
 OLLAMA_TIMEOUT_SEC = int(os.getenv("OLLAMA_TIMEOUT_SEC", "120"))
 OLLAMA_PULL_TIMEOUT_SEC = int(os.getenv("OLLAMA_PULL_TIMEOUT_SEC", "1800"))
 
@@ -27,7 +29,7 @@ class LlmProviderError(Exception):
         self.status_code = status_code
 
 
-def _normalize_provider(provider: Optional[str]) -> str:
+def _normalize_provider(provider: str | None) -> str:
     # Нормализуем провайдера к ограниченному набору допустимых значений.
     # Неизвестные значения переводим в mock для безопасного поведения по умолчанию.
     value = (provider or DEFAULT_LLM_PROVIDER).strip().lower()
@@ -44,7 +46,7 @@ def _clean_line(text: str) -> str:
 
 def _extract_relevant_lines(
     content: str, question: str, max_lines: int = 3
-) -> List[str]:
+) -> list[str]:
     # Локальный extractive-механизм:
     # - ищем строки, содержащие токены вопроса;
     # - если совпадений нет, берем первые информативные строки как fallback.
@@ -55,7 +57,7 @@ def _extract_relevant_lines(
     }
     lines = [line.strip() for line in content.splitlines() if line.strip()]
 
-    hits: List[str] = []
+    hits: list[str] = []
     for line in lines:
         low = line.lower()
         if any(token and token in low for token in q_tokens):
@@ -68,7 +70,9 @@ def _extract_relevant_lines(
     return [_clean_line(line) for line in lines[:max_lines]]
 
 
-def _build_context_block(question: str, chunk: Dict[str, Any], index: int) -> str:
+def _build_context_block(
+    question: str, chunk: dict[str, Any], index: int
+) -> str:
     # Строим компактный и структурированный блок контекста для LLM.
     title = str(chunk.get("title") or "Unknown vessel").strip()
     imo = str(chunk.get("document_imo") or "").strip()
@@ -89,12 +93,16 @@ def _build_context_block(question: str, chunk: Dict[str, Any], index: int) -> st
     if vessel_type:
         header_parts.append(f"type={vessel_type}")
 
-    body = "\n".join(f"- {line}" for line in lines) if lines else "- Нет явных строк"
+    body = (
+        "\n".join(f"- {line}" for line in lines)
+        if lines
+        else "- Нет явных строк"
+    )
     return f"[Source {index}] " + "; ".join(header_parts) + "\n" + body
 
 
 def _build_mock_answer(
-    question: str, chunks: List[Dict[str, Any]], max_chars: int
+    question: str, chunks: list[dict[str, Any]], max_chars: int
 ) -> str:
     # Fallback-ответ без генеративной модели:
     # кратко агрегируем релевантные строки по найденным chunks.
@@ -104,10 +112,12 @@ def _build_mock_answer(
             "Попробуйте уточнить запрос или расширить индексацию."
         )
 
-    parts: List[str] = ["Найденный контекст по вашему вопросу:"]
+    parts: list[str] = ["Найденный контекст по вашему вопросу:"]
     for idx, chunk in enumerate(chunks, start=1):
         title = str(chunk.get("title") or "Unknown vessel").strip()
-        lines = _extract_relevant_lines(str(chunk.get("content") or ""), question)
+        lines = _extract_relevant_lines(
+            str(chunk.get("content") or ""), question
+        )
         if not lines:
             continue
         parts.append(f"{idx}. {title}: " + " | ".join(lines))
@@ -119,11 +129,11 @@ def _build_mock_answer(
 
 
 def _build_rag_prompt(
-    question: str, chunks: List[Dict[str, Any]], max_chars: int
+    question: str, chunks: list[dict[str, Any]], max_chars: int
 ) -> str:
     # Строим строгий prompt с ограничителями против галлюцинаций.
     # Контекст дается в формате [Source N], чтобы LLM мог ссылаться на источник.
-    context_parts: List[str] = []
+    context_parts: list[str] = []
     for idx, chunk in enumerate(chunks, start=1):
         content = str(chunk.get("content") or "").strip()
         if not content:
@@ -174,7 +184,7 @@ def _call_ollama(prompt: str, model: str) -> str:
     return str(parsed.get("response") or "").strip()
 
 
-def _fetch_ollama_models() -> List[str]:
+def _fetch_ollama_models() -> list[str]:
     # Получаем список установленных моделей из локального Ollama runtime.
     req = request.Request(
         url=f"{OLLAMA_BASE_URL}/api/tags",
@@ -185,7 +195,7 @@ def _fetch_ollama_models() -> List[str]:
 
     parsed = json.loads(raw)
     models = parsed.get("models") or []
-    names: List[str] = []
+    names: list[str] = []
     for item in models:
         name = str(item.get("name") or "").strip()
         if name:
@@ -193,7 +203,7 @@ def _fetch_ollama_models() -> List[str]:
     return sorted(set(names))
 
 
-def _fetch_ollama_models_info() -> List[Dict[str, Any]]:
+def _fetch_ollama_models_info() -> list[dict[str, Any]]:
     # Расширенная информация о моделях: размер, семейство, формат и квантование.
     req = request.Request(
         url=f"{OLLAMA_BASE_URL}/api/tags",
@@ -204,7 +214,7 @@ def _fetch_ollama_models_info() -> List[Dict[str, Any]]:
 
     parsed = json.loads(raw)
     models = parsed.get("models") or []
-    rows: List[Dict[str, Any]] = []
+    rows: list[dict[str, Any]] = []
     for item in models:
         details = item.get("details") or {}
         name = str(item.get("name") or "").strip()
@@ -227,12 +237,12 @@ def _fetch_ollama_models_info() -> List[Dict[str, Any]]:
     return rows
 
 
-def get_llm_runtime(provider: Optional[str] = None) -> Dict[str, Any]:
+def get_llm_runtime(provider: str | None = None) -> dict[str, Any]:
     # Возвращаем состояние runtime для UI/диагностики.
     # Здесь же вычисляем квантование сконфигурированной модели,
     # чтобы пользователь видел реальную загрузку ресурса (например Q4_K_M).
     provider_used = _normalize_provider(provider)
-    runtime: Dict[str, Any] = {
+    runtime: dict[str, Any] = {
         "provider": provider_used,
         "configured_model": DEFAULT_LLM_MODEL,
         "available_models": [],
@@ -251,7 +261,9 @@ def get_llm_runtime(provider: Optional[str] = None) -> Dict[str, Any]:
         runtime["available_models"] = [row["name"] for row in models_info]
         for row in models_info:
             if row["name"] == DEFAULT_LLM_MODEL:
-                runtime["configured_model_quantization"] = row.get("quantization_level")
+                runtime["configured_model_quantization"] = row.get(
+                    "quantization_level"
+                )
                 break
         runtime["ollama_reachable"] = True
         return runtime
@@ -260,7 +272,7 @@ def get_llm_runtime(provider: Optional[str] = None) -> Dict[str, Any]:
         return runtime
 
 
-def pull_ollama_model(model: str) -> Dict[str, Any]:
+def pull_ollama_model(model: str) -> dict[str, Any]:
     # Загружаем или обновляем модель в локальном Ollama runtime.
     # stream=False позволяет дождаться итогового статуса одним ответом.
     model_name = (model or "").strip()
@@ -293,7 +305,7 @@ def pull_ollama_model(model: str) -> Dict[str, Any]:
     }
 
 
-def delete_ollama_model(model: str) -> Dict[str, Any]:
+def delete_ollama_model(model: str) -> dict[str, Any]:
     # Удаляем модель из локального Ollama runtime.
     model_name = (model or "").strip()
     if not model_name:
@@ -321,17 +333,19 @@ def delete_ollama_model(model: str) -> Dict[str, Any]:
         raw = exc.read().decode("utf-8", errors="ignore")
         message = raw.strip() or f"Ollama delete failed with status {exc.code}"
         if exc.code in {400, 404}:
-            raise LlmProviderError(message=message, status_code=exc.code)
-        raise LlmProviderError(message=message, status_code=500)
+            raise LlmProviderError(
+                message=message, status_code=exc.code
+            ) from exc
+        raise LlmProviderError(message=message, status_code=500) from exc
 
 
 def generate_answer(
     question: str,
-    chunks: List[Dict[str, Any]],
+    chunks: list[dict[str, Any]],
     max_chars: int = 1200,
-    provider: Optional[str] = None,
-    model: Optional[str] = None,
-) -> Dict[str, str]:
+    provider: str | None = None,
+    model: str | None = None,
+) -> dict[str, str]:
     # Оркестратор генерации:
     # 1) mock-режим для разработки/фолбэка;
     # 2) ollama-режим для локальной LLM;

@@ -3,7 +3,7 @@
 import logging
 import random
 import time
-from typing import Callable, Optional, Tuple
+from collections.abc import Callable
 
 import requests
 
@@ -16,16 +16,16 @@ def fetch_page_with_retry(
     user_agents,
     timeout: int = 30,
     max_retries: int = 5,
-    retry_base_delay: Optional[float] = None,
-    retry_delay_range: Optional[Tuple[float, float]] = None,
+    retry_base_delay: float | None = None,
+    retry_delay_range: tuple[float, float] | None = None,
     return_404_marker: bool = False,
-    on_retry: Optional[Callable[[str, int, int, str], None]] = None,
+    on_retry: Callable[[str, int, int, str], None] | None = None,
 ):
     """Загрузить страницу с повторами и классификацией HTTP-ошибок."""
     for attempt in range(max_retries + 1):
         headers = {"User-Agent": random.choice(user_agents)}
         status_code = None
-        retry_after_seconds: Optional[float] = None
+        retry_after_seconds: float | None = None
         error_kind = "unknown"
         error_text = ""
         try:
@@ -33,8 +33,14 @@ def fetch_page_with_retry(
             response.raise_for_status()
             return response.text
         except requests.exceptions.HTTPError as exc:
-            status_code = exc.response.status_code if exc.response is not None else None
-            error_kind = f"http_{status_code}" if status_code is not None else "http_error"
+            status_code = (
+                exc.response.status_code if exc.response is not None else None
+            )
+            error_kind = (
+                f"http_{status_code}"
+                if status_code is not None
+                else "http_error"
+            )
             error_text = str(exc)
             if status_code == 429 and exc.response is not None:
                 retry_after = exc.response.headers.get("Retry-After")
@@ -62,7 +68,10 @@ def fetch_page_with_retry(
                     error_text,
                 )
                 return None
-        except (requests.exceptions.ReadTimeout, requests.exceptions.ConnectTimeout) as exc:
+        except (
+            requests.exceptions.ReadTimeout,
+            requests.exceptions.ConnectTimeout,
+        ) as exc:
             error_kind = "timeout"
             error_text = str(exc)
             logger.warning(
@@ -142,4 +151,3 @@ def fetch_page_with_retry(
         time.sleep(delay)
 
     return None
-

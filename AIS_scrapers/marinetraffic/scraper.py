@@ -24,18 +24,18 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 
 import config
-import psycopg2
 import requests
 from bs4 import BeautifulSoup
-from PIL import Image
 from common.db import get_db_conn, load_scraper_state, save_scraper_state
 from common.http import fetch_page_with_retry
+from common.logging_setup import configure_scraper_logging
 from common.logging_utils import log_event
 from common.metrics import RuntimeMetrics
 from common.normalize import parse_int
 from common.schema import validate_scraper_schema
+from PIL import Image
 
-logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+configure_scraper_logging("marinetraffic")
 
 # Глобальная сессия для переиспользования соединений
 session = requests.Session()
@@ -106,7 +106,9 @@ def sanitize_numeric(value, *, min_value=None, max_value=None):
     return ivalue
 
 
-def choose_worker_count(last_page_error_ratio: float, recent_retry_count: int) -> int:
+def choose_worker_count(
+    last_page_error_ratio: float, recent_retry_count: int
+) -> int:
     """Адаптивно подобрать число потоков для detail-обработки."""
     if last_page_error_ratio > 0.65 or recent_retry_count >= 20:
         return 2
@@ -123,19 +125,31 @@ def validate_vessel_payload(vessel_data, metrics):
     """Проверить минимальный контракт данных перед записью в БД."""
     vessel_data["name"] = normalize_vessel_name(vessel_data.get("name"))
     vessel_data["flag"] = normalize_label_text(vessel_data.get("flag"))
-    vessel_data["general_type"] = normalize_label_text(vessel_data.get("general_type"))
+    vessel_data["general_type"] = normalize_label_text(
+        vessel_data.get("general_type")
+    )
 
     if not vessel_data.get("name"):
         metrics.empty_name += 1
         return False
 
     vessel_data["year_built"] = sanitize_numeric(
-        vessel_data.get("year_built"), min_value=1800, max_value=datetime.now().year + 1
+        vessel_data.get("year_built"),
+        min_value=1800,
+        max_value=datetime.now().year + 1,
     )
-    vessel_data["length"] = sanitize_numeric(vessel_data.get("length"), min_value=10, max_value=500)
-    vessel_data["width"] = sanitize_numeric(vessel_data.get("width"), min_value=2, max_value=90)
-    vessel_data["gt"] = sanitize_numeric(vessel_data.get("gt"), min_value=50, max_value=600000)
-    vessel_data["dwt"] = sanitize_numeric(vessel_data.get("dwt"), min_value=100, max_value=700000)
+    vessel_data["length"] = sanitize_numeric(
+        vessel_data.get("length"), min_value=10, max_value=500
+    )
+    vessel_data["width"] = sanitize_numeric(
+        vessel_data.get("width"), min_value=2, max_value=90
+    )
+    vessel_data["gt"] = sanitize_numeric(
+        vessel_data.get("gt"), min_value=50, max_value=600000
+    )
+    vessel_data["dwt"] = sanitize_numeric(
+        vessel_data.get("dwt"), min_value=100, max_value=700000
+    )
     return True
 
 
@@ -192,6 +206,7 @@ def fetch_page(url, metrics=None):
     Возвращает:
     - HTML текст или None в случае фатальной ошибки, "404_NOT_FOUND" при 404.
     """
+
     def _on_retry(_url, _attempt, _max_attempts, _kind):
         if metrics is not None:
             metrics.retry_count += 1
@@ -238,7 +253,9 @@ def parse_vessel_list_page(html):
         try:
             # Флаг (первая колонка - изображение флага, alt содержит название страны)
             flag_img = cols[0].find("img")
-            flag = normalize_label_text(flag_img.get("alt")) if flag_img else None
+            flag = (
+                normalize_label_text(flag_img.get("alt")) if flag_img else None
+            )
 
             # Название судна (вторая колонка - ссылка)
             name_link = cols[1].find("a")
@@ -354,7 +371,9 @@ def parse_vessel_detail_page(html):
                         meter_match = re.search(r"(\d+)\s*m", value)
                         if meter_match:
                             data["length"] = sanitize_numeric(
-                                meter_match.group(1), min_value=10, max_value=500
+                                meter_match.group(1),
+                                min_value=10,
+                                max_value=500,
                             )
                     elif "Beam" in label:
                         # Формат: "60 m / 197 ft"
@@ -364,19 +383,25 @@ def parse_vessel_detail_page(html):
                                 meter_match.group(1), min_value=2, max_value=90
                             )
                     elif "Gross Tonnage" in label:
-                        data["gt"] = sanitize_numeric(value, min_value=50, max_value=600000)
+                        data["gt"] = sanitize_numeric(
+                            value, min_value=50, max_value=600000
+                        )
                     elif "DWT" in label and "Summer" in label:
-                        data["dwt"] = sanitize_numeric(value, min_value=100, max_value=700000)
+                        data["dwt"] = sanitize_numeric(
+                            value, min_value=100, max_value=700000
+                        )
 
         # Попробовать найти фото судна
         # MarineTraffic может иметь изображение в <img> с определёнными классами
         photo_img = soup.find(
-            "img", {"class": re.compile(r"ship.*photo|vessel.*image", re.IGNORECASE)}
+            "img",
+            {"class": re.compile(r"ship.*photo|vessel.*image", re.IGNORECASE)},
         )
         if not photo_img:
             # Альтернативный поиск: изображение с src содержащим "photos" или "vessels"
             photo_img = soup.find(
-                "img", {"src": re.compile(r"(photos|vessels|ships)", re.IGNORECASE)}
+                "img",
+                {"src": re.compile(r"(photos|vessels|ships)", re.IGNORECASE)},
             )
 
         if photo_img and photo_img.get("src"):
@@ -408,7 +433,7 @@ def save_vessel_to_db(vessel_data, conn):
         cursor.execute(
             """
             INSERT INTO vessels (
-                mmsi, imo, name, flag, general_type, year_built, 
+                mmsi, imo, name, flag, general_type, year_built,
                 length, width, gt, dwt, photo_url, photo_path,
                 info_source, updated_at
             )
@@ -417,19 +442,19 @@ def save_vessel_to_db(vessel_data, conn):
                 imo = COALESCE(NULLIF(vessels.imo, ''), EXCLUDED.imo, vessels.imo),
                 name = CASE
                     WHEN vessels.name IS NULL OR vessels.name = '' THEN EXCLUDED.name
-                    WHEN (SELECT priority FROM source_priority WHERE source_name = EXCLUDED.info_source) < 
+                    WHEN (SELECT priority FROM source_priority WHERE source_name = EXCLUDED.info_source) <
                          (SELECT priority FROM source_priority WHERE source_name = vessels.info_source) THEN EXCLUDED.name
                     ELSE vessels.name
                 END,
                 flag = CASE
                     WHEN vessels.flag IS NULL OR vessels.flag = '' THEN EXCLUDED.flag
-                    WHEN (SELECT priority FROM source_priority WHERE source_name = EXCLUDED.info_source) < 
+                    WHEN (SELECT priority FROM source_priority WHERE source_name = EXCLUDED.info_source) <
                          (SELECT priority FROM source_priority WHERE source_name = vessels.info_source) THEN EXCLUDED.flag
                     ELSE vessels.flag
                 END,
                 general_type = CASE
                     WHEN vessels.general_type IS NULL OR vessels.general_type = '' THEN EXCLUDED.general_type
-                    WHEN (SELECT priority FROM source_priority WHERE source_name = EXCLUDED.info_source) < 
+                    WHEN (SELECT priority FROM source_priority WHERE source_name = EXCLUDED.info_source) <
                          (SELECT priority FROM source_priority WHERE source_name = vessels.info_source) THEN EXCLUDED.general_type
                     ELSE vessels.general_type
                 END,
@@ -441,12 +466,12 @@ def save_vessel_to_db(vessel_data, conn):
                 photo_url = COALESCE(EXCLUDED.photo_url, vessels.photo_url),
                 photo_path = COALESCE(EXCLUDED.photo_path, vessels.photo_path),
                 info_source = CASE
-                    WHEN (SELECT priority FROM source_priority WHERE source_name = EXCLUDED.info_source) <= 
+                    WHEN (SELECT priority FROM source_priority WHERE source_name = EXCLUDED.info_source) <=
                          (SELECT priority FROM source_priority WHERE source_name = vessels.info_source) THEN EXCLUDED.info_source
                     ELSE vessels.info_source
                 END,
                 updated_at = CASE
-                    WHEN (SELECT priority FROM source_priority WHERE source_name = EXCLUDED.info_source) <= 
+                    WHEN (SELECT priority FROM source_priority WHERE source_name = EXCLUDED.info_source) <=
                          (SELECT priority FROM source_priority WHERE source_name = vessels.info_source) THEN EXCLUDED.updated_at
                     ELSE vessels.updated_at
                 END
@@ -481,7 +506,9 @@ def save_vessel_to_db(vessel_data, conn):
         cursor.close()
 
 
-def process_vessel(vessel_basic, db_settings, metrics, detail_cache, cache_lock):
+def process_vessel(
+    vessel_basic, db_settings, metrics, detail_cache, cache_lock
+):
     """Обработать одно судно: детали, фото и запись в БД.
 
     Параметры:
@@ -558,7 +585,9 @@ def process_vessel(vessel_basic, db_settings, metrics, detail_cache, cache_lock)
             vessel_data["photo_path"] = photo_path
             logging.info(f"Photo saved: {photo_path}")
         else:
-            logging.warning(f"Failed to download photo for {vessel_data.get('name')}")
+            logging.warning(
+                f"Failed to download photo for {vessel_data.get('name')}"
+            )
 
     conn = get_db_conn(
         default_db=db_settings["db"],
@@ -596,7 +625,9 @@ def load_state(conn, mode):
     Возвращает:
     - Кортеж (last_page, vessels_count) или (0, 0) если состояние не найдено.
     """
-    last_page, vessels_count = load_scraper_state(conn, config.DATA_SOURCE, mode)
+    last_page, vessels_count = load_scraper_state(
+        conn, config.DATA_SOURCE, mode
+    )
     if last_page == 1 and vessels_count == 0:
         return 0, 0
     return last_page, vessels_count
@@ -612,7 +643,9 @@ def save_state(conn, mode, page, vessels_count):
     - vessels_count: количество обработанных судов.
     """
     save_scraper_state(conn, config.DATA_SOURCE, mode, page, vessels_count)
-    logging.info(f"State saved: mode '{mode}', page {page}, vessels {vessels_count}")
+    logging.info(
+        f"State saved: mode '{mode}', page {page}, vessels {vessels_count}"
+    )
 
 
 def main():
@@ -656,7 +689,9 @@ def main():
     last_page, vessels_count = load_state(conn, mode)
 
     if last_page == 0:
-        logging.info(f"No state found for mode '{mode}', starting from beginning")
+        logging.info(
+            f"No state found for mode '{mode}', starting from beginning"
+        )
         current_page = 1
         vessels_processed = 0
     else:
@@ -748,7 +783,9 @@ def main():
             )
 
             if not vessels_on_page:
-                logging.warning(f"No vessels found on page {current_page}, stopping")
+                logging.warning(
+                    f"No vessels found on page {current_page}, stopping"
+                )
                 break
 
             logging.info(
@@ -756,7 +793,9 @@ def main():
             )
             workers = choose_worker_count(
                 last_page_error_ratio=last_page_error_ratio,
-                recent_retry_count=max(metrics.retry_count - retry_count_before_page, 0),
+                recent_retry_count=max(
+                    metrics.retry_count - retry_count_before_page, 0
+                ),
             )
             logging.info(
                 "Processing page %s with %s worker threads (prev_error_ratio=%.2f)",
@@ -786,7 +825,9 @@ def main():
                     try:
                         result = bool(future.result())
                     except Exception as exc:
-                        logging.error(f"Worker error on page {current_page}: {exc}")
+                        logging.error(
+                            f"Worker error on page {current_page}: {exc}"
+                        )
                     vessels_processed += 1
                     page_processed += 1
                     metrics.vessels_parsed += 1
@@ -795,7 +836,9 @@ def main():
                         page_saved += 1
                         metrics.vessels_saved += 1
                         if total_saved % CHECKPOINT_EVERY_SAVED == 0:
-                            save_state(conn, mode, current_page, vessels_processed)
+                            save_state(
+                                conn, mode, current_page, vessels_processed
+                            )
 
                     # Проверить лимит судов
                     if max_vessels and vessels_processed >= max_vessels:
@@ -803,7 +846,11 @@ def main():
 
             if page_processed:
                 last_page_error_ratio = max(
-                    0.0, min(1.0, (page_processed - page_saved) / float(page_processed))
+                    0.0,
+                    min(
+                        1.0,
+                        (page_processed - page_saved) / float(page_processed),
+                    ),
                 )
             retry_count_before_page = metrics.retry_count
 

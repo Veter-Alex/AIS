@@ -1,10 +1,9 @@
 """Нормализация числовых значений из HTML-текста."""
 
 import re
-from typing import Optional
 
 
-def parse_int(value, min_digits: int = 1) -> Optional[int]:
+def parse_int(value, min_digits: int = 1) -> int | None:
     """Извлечь целое число из строки с разделителями.
 
     Примеры:
@@ -22,4 +21,3 @@ def parse_int(value, min_digits: int = 1) -> Optional[int]:
     if len(digits) < min_digits:
         return None
     return int(digits)
-

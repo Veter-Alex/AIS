@@ -1,6 +1,6 @@
 # AIS Vessel Database
 
-[![Python](https://img.shields.io/badge/Python-3.8%2B-3776AB?logo=python&logoColor=white)](https://www.python.org/)
+[![Python](https://img.shields.io/badge/Python-3.11%2B-3776AB?logo=python&logoColor=white)](https://www.python.org/)
 [![FastAPI](https://img.shields.io/badge/FastAPI-API-009688?logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com/)
 [![React](https://img.shields.io/badge/React-Frontend-61DAFB?logo=react&logoColor=black)](https://react.dev/)
 [![PostgreSQL](https://img.shields.io/badge/PostgreSQL-Database-4169E1?logo=postgresql&logoColor=white)](https://www.postgresql.org/)
@@ -48,11 +48,26 @@ docker compose up -d
 - Ollama API: http://localhost:11434
 - PostgreSQL: localhost:5432
 
-Проверка здоровья AI Agent:
+Проверка здоровья API:
 
 ```bash
+curl http://localhost:8000/health
+curl http://localhost:8000/ready
 curl http://localhost:8100/health
 ```
+
+## Схема базы данных (Alembic)
+
+Таблицы в `public` и схема `ai` описаны миграциями в каталоге **`alembic/`**. При **`docker compose up`** контейнер **`vessel_api`** перед запуском выполняет **`alembic upgrade head`**.
+
+Локально (из корня репозитория), при уже запущенном PostgreSQL и переменных **`POSTGRES_*`** как в **`.env`**:
+
+```bash
+pip install -r vessel_api/requirements.txt
+alembic upgrade head
+```
+
+Подробности (ручной прогон в Docker, таблица **`alembic_version`**, устаревший **`init.sql`**) — в **[README_DB.txt](README_DB.txt)**.
 
 ## AI возможности
 
@@ -69,21 +84,25 @@ AI Agent поддерживает:
 
 ## Локальная разработка frontend
 
+В репозитории зафиксирован **`package-lock.json`**. Как в CI — воспроизводимая установка:
+
 ```bash
 cd vessel_frontend
-npm install
+npm ci
 npm run dev
 ```
+
+Если меняли **`package.json`**, обновите lock-файл: **`npm install`** и закоммитьте **`package-lock.json`**.
 
 ## Python окружение (.venv)
 
 Для локальных Python-команд в проекте используйте изолированное окружение `.venv`
-(Python 3.8.10), а не глобальный интерпретатор.
+(Python 3.11 — как в Docker-образах и CI), а не глобальный интерпретатор.
 
 Создание окружения (один раз):
 
 ```bash
-py -3.8 -m venv .venv
+py -3.11 -m venv .venv
 ```
 
 Установка зависимостей скраперов и тестов:

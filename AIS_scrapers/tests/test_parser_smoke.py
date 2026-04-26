@@ -2,7 +2,6 @@ import importlib.util
 import sys
 from pathlib import Path
 
-
 ROOT = Path(__file__).resolve().parents[1]
 FIXTURES = ROOT / "tests" / "fixtures"
 
@@ -24,9 +23,13 @@ def _load_scraper(module_name: str, scraper_dir: str):
 
 def test_marinetraffic_golden():
     module = _load_scraper("marinetraffic_scraper", "marinetraffic")
-    list_rows = module.parse_vessel_list_page(_read_fixture("marinetraffic_list.html"))
+    list_rows = module.parse_vessel_list_page(
+        _read_fixture("marinetraffic_list.html")
+    )
     assert len(list_rows) == 1
-    detail = module.parse_vessel_detail_page(_read_fixture("marinetraffic_detail.html"))
+    detail = module.parse_vessel_detail_page(
+        _read_fixture("marinetraffic_detail.html")
+    )
     assert detail["mmsi"] == "477642800"
     assert detail["gt"] == 153115
     assert detail["dwt"] == 281456
@@ -44,20 +47,29 @@ def test_marinetraffic_normalize_mmsi():
 
 def test_marinetraffic_detail_invalid_mmsi_not_stored():
     module = _load_scraper("marinetraffic_bad_mmsi", "marinetraffic")
-    detail = module.parse_vessel_detail_page(_read_fixture("marinetraffic_detail_bad_mmsi.html"))
+    detail = module.parse_vessel_detail_page(
+        _read_fixture("marinetraffic_detail_bad_mmsi.html")
+    )
     assert detail.get("mmsi") is None
 
 
 def test_marinetraffic_detail_spaced_mmsi_normalized():
     module = _load_scraper("marinetraffic_spaced", "marinetraffic")
-    detail = module.parse_vessel_detail_page(_read_fixture("marinetraffic_detail_mmsi_spaced.html"))
+    detail = module.parse_vessel_detail_page(
+        _read_fixture("marinetraffic_detail_mmsi_spaced.html")
+    )
     assert detail["mmsi"] == "477642800"
 
 
 def test_marinetraffic_name_cleanup():
     module = _load_scraper("marinetraffic_name_cleanup", "marinetraffic")
-    assert module.normalize_vessel_name("BLUEIMO: 9862231MMSI: 319239400") == "BLUE"
-    rows = module.parse_vessel_list_page(_read_fixture("marinetraffic_list_bad_name.html"))
+    assert (
+        module.normalize_vessel_name("BLUEIMO: 9862231MMSI: 319239400")
+        == "BLUE"
+    )
+    rows = module.parse_vessel_list_page(
+        _read_fixture("marinetraffic_list_bad_name.html")
+    )
     assert len(rows) == 1
     assert rows[0]["name"] == "BLUE"
 
@@ -73,7 +85,9 @@ def test_marinetraffic_label_and_numeric_cleanup():
 
 def test_myshiptracking_golden():
     module = _load_scraper("myshiptracking_scraper", "myshiptracking")
-    list_rows = module.parse_vessel_list_page(_read_fixture("myshiptracking_list.html"))
+    list_rows = module.parse_vessel_list_page(
+        _read_fixture("myshiptracking_list.html")
+    )
     assert len(list_rows) == 1
     vessel = module.parse_vessel_detail_page(
         _read_fixture("myshiptracking_detail.html"), dict(list_rows[0])
@@ -87,7 +101,10 @@ def test_myshiptracking_normalizers():
     module = _load_scraper("myshiptracking_norm", "myshiptracking")
     assert module.normalize_mmsi("305 123 456") == "305123456"
     assert module.normalize_mmsi("1") is None
-    assert module.normalize_vessel_name("BLUE IMO: 9862231 MMSI: 319239400") == "BLUE"
+    assert (
+        module.normalize_vessel_name("BLUE IMO: 9862231 MMSI: 319239400")
+        == "BLUE"
+    )
     assert module.normalize_label_text(" unknown ") is None
     assert module.sanitize_numeric("399", min_value=10, max_value=500) == 399
     assert module.sanitize_numeric("1", min_value=10, max_value=500) is None
@@ -95,7 +112,9 @@ def test_myshiptracking_normalizers():
 
 def test_maritime_database_golden():
     module = _load_scraper("maritime_scraper", "maritime_database")
-    list_rows = module.parse_vessel_list_page(_read_fixture("maritime_list.html"))
+    list_rows = module.parse_vessel_list_page(
+        _read_fixture("maritime_list.html")
+    )
     assert len(list_rows) == 1
     vessel = module.parse_vessel_detail_page(
         _read_fixture("maritime_detail.html"), dict(list_rows[0])
@@ -109,7 +128,10 @@ def test_maritime_database_normalizers():
     module = _load_scraper("maritime_norm", "maritime_database")
     assert module.normalize_mmsi("477 642 800") == "477642800"
     assert module.normalize_mmsi("1") is None
-    assert module.normalize_vessel_name("ARAON IMO: 9490935 MMSI: 441619000") == "ARAON"
+    assert (
+        module.normalize_vessel_name("ARAON IMO: 9490935 MMSI: 441619000")
+        == "ARAON"
+    )
     assert module.normalize_label_text(" unknown ") is None
     assert module.sanitize_numeric("399", min_value=10, max_value=500) == 399
     assert module.sanitize_numeric("1", min_value=10, max_value=500) is None
@@ -118,9 +140,13 @@ def test_maritime_database_normalizers():
 def test_vesselfinder_golden(monkeypatch):
     module = _load_scraper("vesselfinder_scraper", "vesselfinder")
     monkeypatch.setattr(
-        module, "get_html_with_selenium", lambda *_args, **_kwargs: _read_fixture("vesselfinder_detail.html")
+        module,
+        "get_html_with_selenium",
+        lambda *_args, **_kwargs: _read_fixture("vesselfinder_detail.html"),
     )
-    monkeypatch.setattr(module, "download_image", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        module, "download_image", lambda *_args, **_kwargs: None
+    )
     vessel = module.parse_vessel("https://example.com/vessel")
     assert vessel is not None
     assert vessel["mmsi"] == "477642800"
@@ -129,8 +155,14 @@ def test_vesselfinder_golden(monkeypatch):
 
 def test_vesselfinder_handles_broken_html(monkeypatch):
     module = _load_scraper("vesselfinder_scraper_broken", "vesselfinder")
-    monkeypatch.setattr(module, "get_html_with_selenium", lambda *_args, **_kwargs: "<html><body>broken</body></html>")
-    monkeypatch.setattr(module, "download_image", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        module,
+        "get_html_with_selenium",
+        lambda *_args, **_kwargs: "<html><body>broken</body></html>",
+    )
+    monkeypatch.setattr(
+        module, "download_image", lambda *_args, **_kwargs: None
+    )
     vessel = module.parse_vessel("https://example.com/broken")
     assert vessel is not None
     assert vessel["mmsi"] is None
@@ -140,7 +172,10 @@ def test_vesselfinder_normalizers():
     module = _load_scraper("vesselfinder_norm", "vesselfinder")
     assert module.normalize_mmsi("477 642 800") == "477642800"
     assert module.normalize_mmsi("1") is None
-    assert module.normalize_vessel_name("BLUE IMO: 9862231 MMSI: 319239400") == "BLUE"
+    assert (
+        module.normalize_vessel_name("BLUE IMO: 9862231 MMSI: 319239400")
+        == "BLUE"
+    )
     assert module.normalize_label_text(" unknown ") is None
     assert module.sanitize_numeric("399", min_value=10, max_value=500) == 399
     assert module.sanitize_numeric("1", min_value=10, max_value=500) is None
@@ -158,8 +193,12 @@ def test_vesselfinder_metric_fallbacks(monkeypatch):
       <img class="main-photo" src="https://example.com/a.jpg" />
     </body></html>
     """
-    monkeypatch.setattr(module, "get_html_with_selenium", lambda *_args, **_kwargs: html)
-    monkeypatch.setattr(module, "download_image", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        module, "get_html_with_selenium", lambda *_args, **_kwargs: html
+    )
+    monkeypatch.setattr(
+        module, "download_image", lambda *_args, **_kwargs: None
+    )
     vessel = module.parse_vessel("https://example.com/fallback")
     assert vessel is not None
     assert vessel["length"] == 399

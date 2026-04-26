@@ -6,6 +6,7 @@ AIS_offline_package/data/
 *.dump
 
 # Python
+.ruff_cache/
 __pycache__/
 *.py[cod]
 *$py.class
@@ -35,6 +36,7 @@ venv/
 ENV/
 env/
 .venv
+.venv.old*/
 
 # IDE
 .vscode/

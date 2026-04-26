@@ -1,0 +1,32 @@
+[project]
+name = "ais-workspace"
+version = "0"
+requires-python = ">=3.11"
+
+[tool.ruff]
+target-version = "py311"
+line-length = 79
+exclude = [".venv", "venv", "__pycache__", ".git", "node_modules"]
+
+[tool.ruff.lint]
+select = [
+    "E",   # pycodestyle (ошибки)
+    "W",   # pycodestyle (предупреждения)
+    "F",   # Pyflakes
+    "I",   # isort (сортировка импортов)
+    "UP",  # pyupgrade (синтаксис под целевую версию Python)
+    "B",   # flake8-bugbear (подозрительные конструкции)
+    "SIM", # flake8-simplify
+]
+ignore = [
+    "E501", # длину строк контролирует форматтер
+]
+
+[tool.ruff.lint.per-file-ignores]
+"**/tests/**" = ["E402"]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+skip-magic-trailing-comma = false
+line-ending = "auto"

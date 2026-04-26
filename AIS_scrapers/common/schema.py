@@ -64,4 +64,3 @@ def validate_scraper_schema(conn):
             )
     finally:
         cur.close()
-

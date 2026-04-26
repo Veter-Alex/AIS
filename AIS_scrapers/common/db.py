@@ -2,7 +2,6 @@
 
 import os
 from datetime import datetime
-from typing import Tuple
 
 import psycopg2
 
@@ -24,7 +23,7 @@ def get_db_conn(
     )
 
 
-def load_scraper_state(conn, scraper_name: str, mode: str) -> Tuple[int, int]:
+def load_scraper_state(conn, scraper_name: str, mode: str) -> tuple[int, int]:
     """Загрузить состояние скрапера (last_page, vessels_count)."""
     cur = conn.cursor()
     try:
@@ -68,4 +67,3 @@ def save_scraper_state(
         conn.commit()
     finally:
         cur.close()
-

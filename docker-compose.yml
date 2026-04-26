@@ -16,7 +16,6 @@ services:
       - "5432:5432"   # Публикуем порт Postgres на хосте для локальных подключений
     volumes:
       - ./data/postgres:/var/lib/postgresql/data  # Персистентные данные БД на хосте
-      - ./init.sql:/docker-entrypoint-initdb.d/init.sql  # Автоинициализация схемы на чистой БД
     healthcheck:
       # Проверка готовности БД: ждём пока pg_isready вернёт успешный статус
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
@@ -26,9 +25,12 @@ services:
 
   # Backend API для работы с данными судов (читает из БД и отдаёт фронтенду)
   vessel_api:
-    build: ./vessel_api  # Сборка образа из Dockerfile в папке vessel_api
+    build:
+      context: .
+      dockerfile: vessel_api/Dockerfile
     depends_on:
-      - db               # API стартует после старта БД (но без проверки health)
+      db:
+        condition: service_healthy
     env_file: .env
     environment:
       # Настройки подключения к БД — совпадают с параметрами у db
@@ -37,10 +39,24 @@ services:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
       POSTGRES_HOST: ${POSTGRES_HOST}
       POSTGRES_PORT: ${POSTGRES_PORT}
+      AIS_LOG_DIR: /app/logs
     ports:
       - "8000:8000"   # Публикуем API на http://localhost:8000
     volumes:
       - ./data/vessel_images:/app/images:ro  # Каталог с изображениями (только чтение для API)
+      - ./logs:/app/logs                     # Файловые логи API на хосте
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=5)",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
 
   # Скрапер VesselFinder (Selenium + Chromium), пишет данные и фото
   # vesselfinder_scraper:
@@ -88,7 +104,9 @@ services:
 
   # Скрапер MyShipTracking, пишет данные о судах
   myshiptracking_scraper:
-    build: ./AIS_scrapers/myshiptracking
+    build:
+      context: ./AIS_scrapers
+      dockerfile: myshiptracking/Dockerfile
     profiles:
       - scrapers
     depends_on:
@@ -104,16 +122,20 @@ services:
       POSTGRES_PORT: ${POSTGRES_PORT}
       # Режим работы скрапера: test|full
       SCRAPER_MODE: "full"
+      AIS_LOG_DIR: /app/logs
     volumes:
       - type: bind
         source: ./data/vessel_images   # Папка изображений на хосте
         target: /app/images            # Точка монтирования внутри контейнера
         bind:
           create_host_path: true       # Создать папку на хосте, если её нет
+      - ./logs:/app/logs               # Логи скрапера на хосте
 
   # Скрапер MarineTraffic, пишет данные о судах (приоритет 1)
   marinetraffic_scraper:
-    build: ./AIS_scrapers/marinetraffic
+    build:
+      context: ./AIS_scrapers
+      dockerfile: marinetraffic/Dockerfile
     profiles:
       - scrapers
     depends_on:
@@ -129,18 +151,21 @@ services:
       POSTGRES_PORT: ${POSTGRES_PORT}
       # Режим работы скрапера: test|full
       SCRAPER_MODE: "full"
+      AIS_LOG_DIR: /app/logs
     volumes:
       - type: bind
         source: ./data/vessel_images   # Папка изображений на хосте
         target: /app/images            # Точка монтирования внутри контейнера
         bind:
           create_host_path: true       # Создать папку на хосте, если её нет
+      - ./logs:/app/logs               # Логи скрапера на хосте
 
   # Фронтенд (Nginx + статический сайт), обращается к API
   vessel_frontend:
     build: ./vessel_frontend
     depends_on:
-      - vessel_api         # Фронтенд стартует после API
+      vessel_api:
+        condition: service_healthy
     env_file: .env
     ports:
       - "3000:80"        # Публикуем фронтенд на http://localhost:3000
@@ -150,10 +175,14 @@ services:
 
   # AI Agent
   ai_agent:
-    build: ./ai_agent
+    build:
+      context: .
+      dockerfile: ai_agent/Dockerfile
     depends_on:
-      - db
-      - ollama
+      db:
+        condition: service_healthy
+      ollama:
+        condition: service_started
     env_file: .env
     environment:
       POSTGRES_DB: ${POSTGRES_DB}
@@ -166,8 +195,11 @@ services:
       LLM_PROVIDER: ollama
       LLM_MODEL: llama3.2:3b
       OLLAMA_BASE_URL: http://ollama:11434
+      AIS_LOG_DIR: /app/logs
     ports:
       - "8100:8100"
+    volumes:
+      - ./logs:/app/logs
 
   # Локальный LLM runtime.
   ollama:

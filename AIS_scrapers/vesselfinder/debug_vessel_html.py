@@ -10,14 +10,21 @@
 import logging
 import os
 import random
+import sys
 import time
+from pathlib import Path
 
 from bs4 import BeautifulSoup
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.chrome.service import Service
 
-logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+_SCRAPERS_ROOT = Path(__file__).resolve().parent.parent
+if str(_SCRAPERS_ROOT) not in sys.path:
+    sys.path.insert(0, str(_SCRAPERS_ROOT))
+from common.logging_setup import configure_scraper_logging  # noqa: E402
+
+configure_scraper_logging("vesselfinder_debug")
 
 URL = os.getenv(
     "DEBUG_VESSEL_URL", "https://www.vesselfinder.com/vessels/details/9648714"
@@ -101,17 +108,23 @@ def summarize(html: str):
             print(f'IMG class="{cls}" alt="{alt}" src="{src}"')
     print("\n===== IMO / MMSI RAW CONTEXT (first 25 lines) =====")
     body_text = soup.get_text("\n", strip=True)
-    lines = [l for l in body_text.split("\n") if "IMO" in l or "MMSI" in l]
-    for l in lines[:25]:
-        print(l)
+    lines = [
+        line
+        for line in body_text.split("\n")
+        if "IMO" in line or "MMSI" in line
+    ]
+    for line in lines[:25]:
+        print(line)
     print("\n===== LENGTH / BEAM / DWT / GT / YEAR CONTEXT (heuristic) =====")
     metrics_lines = [
-        l
-        for l in body_text.split("\n")
-        if any(k in l for k in ["Length", "Beam", "DWT", "GT", "Built", "Year"])
+        line
+        for line in body_text.split("\n")
+        if any(
+            k in line for k in ["Length", "Beam", "DWT", "GT", "Built", "Year"]
+        )
     ]
-    for l in metrics_lines[:30]:
-        print(l)
+    for line in metrics_lines[:30]:
+        print(line)
 
 
 def main():

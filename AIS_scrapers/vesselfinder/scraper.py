@@ -19,8 +19,8 @@ import random
 import re
 import threading
 import time
-from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from datetime import datetime
 
 import config
 import requests
@@ -28,8 +28,11 @@ from bs4 import BeautifulSoup
 from common.db import (
     get_db_conn,
     load_scraper_state,
+)
+from common.db import (
     save_scraper_state as persist_scraper_state,
 )
+from common.logging_setup import configure_scraper_logging
 from common.logging_utils import log_event
 from common.metrics import RuntimeMetrics
 from common.normalize import parse_int
@@ -43,7 +46,7 @@ from selenium.webdriver.common.by import By
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.support.ui import WebDriverWait
 
-logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+configure_scraper_logging("vesselfinder")
 PLACEHOLDER_VALUES = {"", "-", "n/a", "na", "none", "unknown", "not available"}
 
 
@@ -104,7 +107,9 @@ def extract_metric_value(text, labels):
     if not text:
         return None
     for label in labels:
-        pattern = rf"{label}\s*(?:\([^)]*\))?\s*[:\-]?\s*([0-9][0-9.,\s]{{0,15}})"
+        pattern = (
+            rf"{label}\s*(?:\([^)]*\))?\s*[:\-]?\s*([0-9][0-9.,\s]{{0,15}})"
+        )
         m = re.search(pattern, text, flags=re.IGNORECASE)
         if not m:
             continue
@@ -115,7 +120,9 @@ def extract_metric_value(text, labels):
     return None
 
 
-def choose_worker_count(last_page_error_ratio: float, recent_retry_count: int) -> int:
+def choose_worker_count(
+    last_page_error_ratio: float, recent_retry_count: int
+) -> int:
     if last_page_error_ratio > 0.65 or recent_retry_count >= 20:
         return 1
     if last_page_error_ratio > 0.4 or recent_retry_count >= 12:
@@ -128,8 +135,12 @@ def choose_worker_count(last_page_error_ratio: float, recent_retry_count: int) -
 def validate_vessel_payload(vessel_data, metrics):
     vessel_data["name"] = normalize_vessel_name(vessel_data.get("name"))
     vessel_data["flag"] = normalize_label_text(vessel_data.get("flag"))
-    vessel_data["general_type"] = normalize_label_text(vessel_data.get("general_type"))
-    vessel_data["detailed_type"] = normalize_label_text(vessel_data.get("detailed_type"))
+    vessel_data["general_type"] = normalize_label_text(
+        vessel_data.get("general_type")
+    )
+    vessel_data["detailed_type"] = normalize_label_text(
+        vessel_data.get("detailed_type")
+    )
     vessel_data["mmsi"] = normalize_mmsi(vessel_data.get("mmsi"))
 
     if not vessel_data.get("name"):
@@ -140,12 +151,22 @@ def validate_vessel_payload(vessel_data, metrics):
         return False
 
     vessel_data["year_built"] = sanitize_numeric(
-        vessel_data.get("year_built"), min_value=1800, max_value=datetime.now().year + 1
+        vessel_data.get("year_built"),
+        min_value=1800,
+        max_value=datetime.now().year + 1,
     )
-    vessel_data["length"] = sanitize_numeric(vessel_data.get("length"), min_value=10, max_value=500)
-    vessel_data["width"] = sanitize_numeric(vessel_data.get("width"), min_value=2, max_value=90)
-    vessel_data["gt"] = sanitize_numeric(vessel_data.get("gt"), min_value=50, max_value=600000)
-    vessel_data["dwt"] = sanitize_numeric(vessel_data.get("dwt"), min_value=100, max_value=700000)
+    vessel_data["length"] = sanitize_numeric(
+        vessel_data.get("length"), min_value=10, max_value=500
+    )
+    vessel_data["width"] = sanitize_numeric(
+        vessel_data.get("width"), min_value=2, max_value=90
+    )
+    vessel_data["gt"] = sanitize_numeric(
+        vessel_data.get("gt"), min_value=50, max_value=600000
+    )
+    vessel_data["dwt"] = sanitize_numeric(
+        vessel_data.get("dwt"), min_value=100, max_value=700000
+    )
     return True
 
 
@@ -159,13 +180,25 @@ def get_scraper_state(mode):
     - кортеж `(last_page, vessels_count)`;
     - `(1, 0)`, если состояние для режима отсутствует.
     """
-    conn = get_db_conn(config.DB_NAME, config.DB_USER, config.DB_PASSWORD, config.DB_HOST, config.DB_PORT)
+    conn = get_db_conn(
+        config.DB_NAME,
+        config.DB_USER,
+        config.DB_PASSWORD,
+        config.DB_HOST,
+        config.DB_PORT,
+    )
     try:
-        last_page, vessels_count = load_scraper_state(conn, "vesselfinder", mode)
+        last_page, vessels_count = load_scraper_state(
+            conn, "vesselfinder", mode
+        )
         if last_page != 1 or vessels_count != 0:
-            logging.info(f"Загружено состояние для режима '{mode}': страница {last_page}, судов {vessels_count}")
+            logging.info(
+                f"Загружено состояние для режима '{mode}': страница {last_page}, судов {vessels_count}"
+            )
             return last_page, vessels_count
-        logging.info(f"Состояние для режима '{mode}' не найдено, начинаем с начала")
+        logging.info(
+            f"Состояние для режима '{mode}' не найдено, начинаем с начала"
+        )
         return 1, 0
     finally:
         conn.close()
@@ -182,9 +215,17 @@ def save_scraper_state(mode, last_page, vessels_count):
     Побочные эффекты:
     - выполняет upsert и commit в БД.
     """
-    conn = get_db_conn(config.DB_NAME, config.DB_USER, config.DB_PASSWORD, config.DB_HOST, config.DB_PORT)
+    conn = get_db_conn(
+        config.DB_NAME,
+        config.DB_USER,
+        config.DB_PASSWORD,
+        config.DB_HOST,
+        config.DB_PORT,
+    )
     try:
-        persist_scraper_state(conn, "vesselfinder", mode, last_page, vessels_count)
+        persist_scraper_state(
+            conn, "vesselfinder", mode, last_page, vessels_count
+        )
         logging.info(
             f"Состояние сохранено: режим '{mode}', страница {last_page}, судов {vessels_count}"
         )
@@ -220,7 +261,9 @@ def download_image(photo_url, vessel_key):
             # Конвертировать в RGB (для JPEG)
             if img.mode in ("RGBA", "LA", "P"):
                 rgb_img = Image.new("RGB", img.size, (255, 255, 255))
-                rgb_img.paste(img, mask=img.split()[-1] if img.mode == "RGBA" else None)
+                rgb_img.paste(
+                    img, mask=img.split()[-1] if img.mode == "RGBA" else None
+                )
                 img = rgb_img
 
             # Сжать размер (макс 320x240)
@@ -252,11 +295,19 @@ def save_to_db(vessel):
     - выполняет commit транзакции;
     - пишет подробные события в лог.
     """
-    conn = get_db_conn(config.DB_NAME, config.DB_USER, config.DB_PASSWORD, config.DB_HOST, config.DB_PORT)
+    conn = get_db_conn(
+        config.DB_NAME,
+        config.DB_USER,
+        config.DB_PASSWORD,
+        config.DB_HOST,
+        config.DB_PORT,
+    )
     cur = conn.cursor()
     imo = vessel.get("imo")
     mmsi = vessel.get("mmsi")
-    logging.info(f"save_to_db: name={vessel.get('name')} imo={imo} mmsi={mmsi}")
+    logging.info(
+        f"save_to_db: name={vessel.get('name')} imo={imo} mmsi={mmsi}"
+    )
     if not mmsi:
         logging.warning("Пропуск записи: нет MMSI")
         cur.close()
@@ -285,7 +336,7 @@ def save_to_db(vessel):
         photo_url=COALESCE(EXCLUDED.photo_url, vessels.photo_url),
         photo_path=COALESCE(EXCLUDED.photo_path, vessels.photo_path),
         description=COALESCE(EXCLUDED.description, vessels.description),
-        info_source=CASE 
+        info_source=CASE
             WHEN {existing_prio} <= {incoming_prio}
             THEN vessels.info_source
             ELSE %s
@@ -298,24 +349,24 @@ def save_to_db(vessel):
         cur.execute(
             sql,
             (
-            (vessel.get("name") or "").strip() or None,
-            imo,
-            mmsi,
-            vessel.get("call_sign"),
-            vessel.get("general_type"),
-            vessel.get("detailed_type"),
-            vessel.get("flag"),
-            vessel.get("year_built"),
-            vessel.get("length"),
-            vessel.get("width"),
-            vessel.get("dwt"),
-            vessel.get("gt"),
-            vessel.get("home_port"),
-            vessel.get("photo_url"),
-            vessel.get("photo_path"),
-            vessel.get("description"),
-            source_name,  # info_source в INSERT
-            vessel.get("vessel_key"),
+                (vessel.get("name") or "").strip() or None,
+                imo,
+                mmsi,
+                vessel.get("call_sign"),
+                vessel.get("general_type"),
+                vessel.get("detailed_type"),
+                vessel.get("flag"),
+                vessel.get("year_built"),
+                vessel.get("length"),
+                vessel.get("width"),
+                vessel.get("dwt"),
+                vessel.get("gt"),
+                vessel.get("home_port"),
+                vessel.get("photo_url"),
+                vessel.get("photo_path"),
+                vessel.get("description"),
+                source_name,  # info_source в INSERT
+                vessel.get("vessel_key"),
                 source_name,  # info_source для CASE WHEN в UPDATE
                 source_name,
             ),
@@ -358,8 +409,14 @@ def get_html_with_selenium(url, user_agent, retries=0):
     chrome_binary = os.getenv("CHROME_BIN", config.CHROME_BINARY)
     if chrome_binary and os.path.exists(chrome_binary):
         opts.binary_location = chrome_binary
-    chromedriver_binary = os.getenv("CHROMEDRIVER_BIN", config.CHROMEDRIVER_BINARY)
-    service = Service(chromedriver_binary) if chromedriver_binary and os.path.exists(chromedriver_binary) else Service()
+    chromedriver_binary = os.getenv(
+        "CHROMEDRIVER_BIN", config.CHROMEDRIVER_BINARY
+    )
+    service = (
+        Service(chromedriver_binary)
+        if chromedriver_binary and os.path.exists(chromedriver_binary)
+        else Service()
+    )
     max_pause = int(os.getenv("MAX_RETRY_PAUSE_SECONDS", "20"))
     attempt = retries
     while attempt <= config.MAX_RETRIES:
@@ -368,7 +425,9 @@ def get_html_with_selenium(url, user_agent, retries=0):
             driver = webdriver.Chrome(service=service, options=opts)
             driver.get(url)
             # Явные ожидания ключевых элементов для динамически подгружаемого контента
-            wait_timeout = int(os.getenv("WAIT_TIMEOUT", str(config.WAIT_TIMEOUT)))
+            wait_timeout = int(
+                os.getenv("WAIT_TIMEOUT", str(config.WAIT_TIMEOUT))
+            )
             wait = WebDriverWait(driver, wait_timeout, poll_frequency=0.5)
             try:
                 wait.until(
@@ -381,7 +440,9 @@ def get_html_with_selenium(url, user_agent, retries=0):
                 )
                 logging.info("Ожидание таблицы Length Overall: OK")
             except TimeoutException:
-                logging.warning("Таблица Length Overall не появилась за таймаут")
+                logging.warning(
+                    "Таблица Length Overall не появилась за таймаут"
+                )
             try:
                 wait.until(
                     EC.presence_of_element_located(
@@ -393,11 +454,15 @@ def get_html_with_selenium(url, user_agent, retries=0):
                 )
                 logging.info("Ожидание таблицы Gross Tonnage: OK")
             except TimeoutException:
-                logging.warning("Таблица Gross Tonnage не появилась за таймаут")
+                logging.warning(
+                    "Таблица Gross Tonnage не появилась за таймаут"
+                )
             # Фото (scroll + наличие)
             try:
                 photo_el = wait.until(
-                    EC.presence_of_element_located((By.CSS_SELECTOR, "img.main-photo"))
+                    EC.presence_of_element_located(
+                        (By.CSS_SELECTOR, "img.main-photo")
+                    )
                 )
                 driver.execute_script(
                     "arguments[0].scrollIntoView({block: 'center'});", photo_el
@@ -407,16 +472,24 @@ def get_html_with_selenium(url, user_agent, retries=0):
                 logging.warning("Фото main-photo не появилось за таймаут")
             # Небольшая рандомная задержка для стабилизации DOM
             time.sleep(
-                random.uniform(config.DOM_STABILIZATION_MIN, config.DOM_STABILIZATION_MAX)
+                random.uniform(
+                    config.DOM_STABILIZATION_MIN, config.DOM_STABILIZATION_MAX
+                )
             )
             return driver.page_source
         except WebDriverException as e:
             if attempt >= config.MAX_RETRIES:
-                if hasattr(config, "_runtime_metrics") and config._runtime_metrics is not None:
+                if (
+                    hasattr(config, "_runtime_metrics")
+                    and config._runtime_metrics is not None
+                ):
                     config._runtime_metrics.http_failures += 1
                 logging.error(f"WebDriver окончательная ошибка: {e}")
                 return None
-            if hasattr(config, "_runtime_metrics") and config._runtime_metrics is not None:
+            if (
+                hasattr(config, "_runtime_metrics")
+                and config._runtime_metrics is not None
+            ):
                 config._runtime_metrics.retry_count += 1
             delay = min(config.RETRY_BASE_DELAY**attempt, max_pause)
             jitter = random.uniform(0.0, 0.8)
@@ -454,7 +527,11 @@ def get_vessel_links(page=1, vessel_type=None):
         url = f"https://www.vesselfinder.com/vessels?page={page}"
     ua = random.choice(config.USER_AGENTS)
     html = get_html_with_selenium(url, ua)
-    if not html and hasattr(config, "_runtime_metrics") and config._runtime_metrics is not None:
+    if (
+        not html
+        and hasattr(config, "_runtime_metrics")
+        and config._runtime_metrics is not None
+    ):
         config._runtime_metrics.http_failures += 1
     if not html:
         return []
@@ -494,15 +571,17 @@ def parse_vessel(url):
         vessel["info_source"] = "vesselfinder.com"
         vessel["updated_at"] = datetime.utcnow()
         h1 = soup.find("h1")
-        vessel["name"] = normalize_vessel_name(" ".join(h1.text.split()) if h1 and h1.text else None)
+        vessel["name"] = normalize_vessel_name(
+            " ".join(h1.text.split()) if h1 and h1.text else None
+        )
 
         tables = soup.find_all(
             "table", class_=lambda c: c and ("tpt1" in c or "aparams" in c)
         )
         combined = " ".join(t.get_text(" ", strip=True) for t in tables)
 
-        def rx(pattern, flags=0, group=1):
-            m = re.search(pattern, combined, flags)
+        def rx(pattern, flags=0, group=1, _text=combined):
+            m = re.search(pattern, _text, flags)
             return m.group(group) if m else None
 
         vessel["imo"] = rx(r"IMO\s*(\d{7})") or rx(r"IMO number\s*(\d{7})")
@@ -517,17 +596,22 @@ def parse_vessel(url):
                 r"Flag\s+([A-Za-z (),\-]+?)(?:\s+Year of Build|\s+AIS Flag|\n)",
                 flags=re.IGNORECASE,
             )
-            or rx(r"Флаг AIS\s+([A-Za-z (),\-]+?)(?:\n|$)", flags=re.IGNORECASE)
-            or rx(r"AIS Flag\s+([A-Za-z (),\-]+?)(?:\n|$)", flags=re.IGNORECASE)
+            or rx(
+                r"Флаг AIS\s+([A-Za-z (),\-]+?)(?:\n|$)", flags=re.IGNORECASE
+            )
+            or rx(
+                r"AIS Flag\s+([A-Za-z (),\-]+?)(?:\n|$)", flags=re.IGNORECASE
+            )
         )
         vessel["year_built"] = (
             rx(r"Year of Build\s*(\d{4})")
             or rx(r"Built\s*(\d{4})")
             or rx(r"Год постройки\s*(\d{4})")
         )
-        vessel["general_type"] = normalize_label_text(rx(r"Ship Type\s*([A-Za-z /-]+?)\s+Flag") or rx(
-            r"is a\s+([A-Za-z /-]+?)\s+built", flags=re.IGNORECASE
-        ))
+        vessel["general_type"] = normalize_label_text(
+            rx(r"Ship Type\s*([A-Za-z /-]+?)\s+Flag")
+            or rx(r"is a\s+([A-Za-z /-]+?)\s+built", flags=re.IGNORECASE)
+        )
         vessel["detailed_type"] = vessel.get("general_type")
         vessel["length"] = rx(r"Length Overall \(m\)\s*([0-9.]+)")
         vessel["width"] = rx(r"Beam \(m\)\s*([0-9.]+)")
@@ -585,23 +669,37 @@ def parse_vessel(url):
         # Не используем fallback на одиночную цифру после Deadweight, чтобы избежать ложных '3'
 
         vessel["year_built"] = sanitize_numeric(
-            vessel.get("year_built"), min_value=1800, max_value=datetime.now().year + 1
+            vessel.get("year_built"),
+            min_value=1800,
+            max_value=datetime.now().year + 1,
         )
-        vessel["length"] = sanitize_numeric(vessel.get("length"), min_value=10, max_value=500)
-        vessel["width"] = sanitize_numeric(vessel.get("width"), min_value=2, max_value=90)
-        vessel["dwt"] = sanitize_numeric(vessel.get("dwt"), min_value=100, max_value=700000)
-        vessel["gt"] = sanitize_numeric(vessel.get("gt"), min_value=50, max_value=600000)
+        vessel["length"] = sanitize_numeric(
+            vessel.get("length"), min_value=10, max_value=500
+        )
+        vessel["width"] = sanitize_numeric(
+            vessel.get("width"), min_value=2, max_value=90
+        )
+        vessel["dwt"] = sanitize_numeric(
+            vessel.get("dwt"), min_value=100, max_value=700000
+        )
+        vessel["gt"] = sanitize_numeric(
+            vessel.get("gt"), min_value=50, max_value=600000
+        )
 
         img = soup.find("img", class_="main-photo")
         vessel["photo_url"] = img["src"] if img and img.get("src") else None
         vessel_key = vessel.get("imo") or vessel.get("mmsi")
         if vessel["photo_url"] and vessel_key:
-            vessel["photo_path"] = download_image(vessel["photo_url"], vessel_key)
+            vessel["photo_path"] = download_image(
+                vessel["photo_url"], vessel_key
+            )
         logging.info(
             f"Парсинг судна завершён: name={vessel.get('name')} imo={vessel.get('imo')} mmsi={vessel.get('mmsi')}"
         )
         return vessel
-    logging.error(f"Не удалось распарсить после {config.MAX_RETRIES} попыток: {url}")
+    logging.error(
+        f"Не удалось распарсить после {config.MAX_RETRIES} попыток: {url}"
+    )
     return None
 
 
@@ -623,7 +721,13 @@ def main():
     metrics = RuntimeMetrics()
     config._runtime_metrics = metrics
     logging.info(f"main() started, режим: {mode}")
-    schema_conn = get_db_conn(config.DB_NAME, config.DB_USER, config.DB_PASSWORD, config.DB_HOST, config.DB_PORT)
+    schema_conn = get_db_conn(
+        config.DB_NAME,
+        config.DB_USER,
+        config.DB_PASSWORD,
+        config.DB_HOST,
+        config.DB_PORT,
+    )
     try:
         validate_scraper_schema(schema_conn)
     finally:
@@ -640,8 +744,12 @@ def main():
         max_vessels = config.MAX_VESSELS_FULL
         max_pages = config.MAX_PAGES
 
-    logging.info(f"Лимит судов: {max_vessels if max_vessels else 'без ограничений'}")
-    logging.info(f"Лимит страниц: {max_pages if max_pages else 'без ограничений'}")
+    logging.info(
+        f"Лимит судов: {max_vessels if max_vessels else 'без ограничений'}"
+    )
+    logging.info(
+        f"Лимит страниц: {max_pages if max_pages else 'без ограничений'}"
+    )
 
     count = saved_count
     page = start_page
@@ -685,7 +793,9 @@ def main():
 
             workers = choose_worker_count(
                 last_page_error_ratio=last_page_error_ratio,
-                recent_retry_count=max(metrics.retry_count - retry_count_before_page, 0),
+                recent_retry_count=max(
+                    metrics.retry_count - retry_count_before_page, 0
+                ),
             )
             logging.info(
                 "Обработка страницы %s с %s потоками (prev_error_ratio=%.2f)",
@@ -751,7 +861,11 @@ def main():
 
             if page_processed > 0:
                 last_page_error_ratio = max(
-                    0.0, min(1.0, (page_processed - page_saved) / float(page_processed))
+                    0.0,
+                    min(
+                        1.0,
+                        (page_processed - page_saved) / float(page_processed),
+                    ),
                 )
             retry_count_before_page = metrics.retry_count
 
@@ -773,7 +887,9 @@ def main():
                 logging.info("main() finished")
                 return
 
-            delay = random.uniform(config.DETAIL_DELAY_MIN, config.DETAIL_DELAY_MAX)
+            delay = random.uniform(
+                config.DETAIL_DELAY_MIN, config.DETAIL_DELAY_MAX
+            )
             logging.info(f"Задержка {delay:.1f} сек")
             time.sleep(delay)
 

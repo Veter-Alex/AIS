@@ -2,15 +2,14 @@ FROM python:3.11-slim
 
 WORKDIR /app
 
-# Установить зависимости
-COPY requirements.txt .
+COPY marinetraffic/requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Скопировать код скрапера
-COPY scraper.py config.py ./
+COPY marinetraffic/scraper.py marinetraffic/config.py ./
+COPY common ./common
 
-# Создать директорию для изображений
+ENV PYTHONPATH=/app
+
 RUN mkdir -p /app/images
 
-# Запустить скрапер
 CMD ["python", "-u", "scraper.py"]
