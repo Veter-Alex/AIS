@@ -1,5 +1,5 @@
-﻿[Unit]
-Description=AIS data collection stack (Raspberry Pi)
+[Unit]
+Description=AIS ingestion stack (db + scrapers + API)
 Requires=docker.service
 After=docker.service network-online.target
 Wants=network-online.target

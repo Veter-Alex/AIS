@@ -2,10 +2,9 @@
 
 ## Что запускаем
 
-`docker-compose.rpi.yml` поднимает:
+`deploy/compose/ingestion.yml` поднимает:
 - `db` (PostgreSQL + pgvector)
 - `vessel_api` (с авто-миграцией Alembic)
-- `vessel_frontend`
 - `marinetraffic_scraper`
 - `myshiptracking_scraper`
 - `maritime_database_scraper`
@@ -54,25 +53,25 @@ SCRAPER_WAIT_TIMEOUT=25
 ## 5) Запустить стек
 
 ```bash
-docker compose -f docker-compose.rpi.yml up -d --build
+docker compose -f deploy/compose/ingestion.yml up -d --build
 ```
 
 ## 6) Мониторинг и проверка
 
 ```bash
-docker compose -f docker-compose.rpi.yml ps
+docker compose -f deploy/compose/ingestion.yml ps
 curl http://localhost:8000/health
 curl http://localhost:8000/ready
 
-docker compose -f docker-compose.rpi.yml logs -f marinetraffic_scraper
-docker compose -f docker-compose.rpi.yml logs -f myshiptracking_scraper
-docker compose -f docker-compose.rpi.yml logs -f maritime_database_scraper
+docker compose -f deploy/compose/ingestion.yml logs -f marinetraffic_scraper
+docker compose -f deploy/compose/ingestion.yml logs -f myshiptracking_scraper
+docker compose -f deploy/compose/ingestion.yml logs -f maritime_database_scraper
 ```
 
 Проверка роста БД:
 
 ```bash
-docker compose -f docker-compose.rpi.yml exec db \
+docker compose -f deploy/compose/ingestion.yml exec db \
   psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -c "SELECT count(*) FROM vessels;"
 ```
 
@@ -87,7 +86,7 @@ docker compose -f docker-compose.rpi.yml exec db \
 ## Остановка
 
 ```bash
-docker compose -f docker-compose.rpi.yml down
+docker compose -f deploy/compose/ingestion.yml down
 ```
 
 ## Автозапуск после ребута (systemd unit)
@@ -96,34 +95,35 @@ docker compose -f docker-compose.rpi.yml down
 - `scripts/ais-rpi.service`
 - `scripts/rpi-stack-up.sh`
 - `scripts/rpi-stack-down.sh`
+- `deploy/systemd/ais-ingestion.service`
 
 Установка на Raspberry Pi:
 
 ```bash
 cd ~/AIS
 chmod +x scripts/rpi-stack-up.sh scripts/rpi-stack-down.sh
-sudo cp scripts/ais-rpi.service /etc/systemd/system/ais-rpi.service
+sudo cp deploy/systemd/ais-ingestion.service /etc/systemd/system/ais-ingestion.service
 sudo systemctl daemon-reload
-sudo systemctl enable --now ais-rpi.service
+sudo systemctl enable --now ais-ingestion.service
 ```
 
 Проверка статуса:
 
 ```bash
-systemctl status ais-rpi.service --no-pager
-docker compose -f docker-compose.rpi.yml ps
+systemctl status ais-ingestion.service --no-pager
+docker compose -f deploy/compose/ingestion.yml ps
 ```
 
 Unit содержит pre-check перед запуском:
 - доступность `docker` в `/usr/bin/docker`;
 - существование каталога `/home/veteran/AIS`;
-- наличие файла `/home/veteran/AIS/docker-compose.rpi.yml`;
+- наличие файла `/home/veteran/AIS/deploy/compose/ingestion.yml`;
 - работоспособность Docker daemon (`docker info`).
 
 Управление:
 
 ```bash
-sudo systemctl restart ais-rpi.service
-sudo systemctl stop ais-rpi.service
-sudo systemctl start ais-rpi.service
+sudo systemctl restart ais-ingestion.service
+sudo systemctl stop ais-ingestion.service
+sudo systemctl start ais-ingestion.service
 ```

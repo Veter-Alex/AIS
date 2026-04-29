@@ -1,8 +1,8 @@
-﻿services:
+services:
   db:
     image: pgvector/pgvector:pg15
     restart: unless-stopped
-    env_file: .env
+    env_file: ../../.env
     environment:
       POSTGRES_DB: ${POSTGRES_DB}
       POSTGRES_USER: ${POSTGRES_USER}
@@ -12,7 +12,7 @@
     ports:
       - "5432:5432"
     volumes:
-      - ./data/postgres:/var/lib/postgresql/data
+      - ../../data/postgres:/var/lib/postgresql/data
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
       interval: 10s
@@ -21,13 +21,13 @@
 
   vessel_api:
     build:
-      context: .
+      context: ../..
       dockerfile: vessel_api/Dockerfile
     restart: unless-stopped
     depends_on:
       db:
         condition: service_healthy
-    env_file: .env
+    env_file: ../../.env
     environment:
       POSTGRES_DB: ${POSTGRES_DB}
       POSTGRES_USER: ${POSTGRES_USER}
@@ -40,8 +40,8 @@
     ports:
       - "8000:8000"
     volumes:
-      - ./data/vessel_images:/app/images:ro
-      - ./logs:/app/logs
+      - ../../data/vessel_images:/app/images:ro
+      - ../../logs:/app/logs
     healthcheck:
       test:
         [
@@ -57,13 +57,13 @@
 
   marinetraffic_scraper:
     build:
-      context: ./AIS_scrapers
+      context: ../../AIS_scrapers
       dockerfile: marinetraffic/Dockerfile
     restart: unless-stopped
     depends_on:
       db:
         condition: service_healthy
-    env_file: .env
+    env_file: ../../.env
     environment:
       POSTGRES_DB: ${POSTGRES_DB}
       POSTGRES_USER: ${POSTGRES_USER}
@@ -74,18 +74,18 @@
       AIS_LOG_DIR: /app/logs
       LOG_LEVEL: INFO
     volumes:
-      - ./data/vessel_images:/app/images
-      - ./logs:/app/logs
+      - ../../data/vessel_images:/app/images
+      - ../../logs:/app/logs
 
   myshiptracking_scraper:
     build:
-      context: ./AIS_scrapers
+      context: ../../AIS_scrapers
       dockerfile: myshiptracking/Dockerfile
     restart: unless-stopped
     depends_on:
       db:
         condition: service_healthy
-    env_file: .env
+    env_file: ../../.env
     environment:
       POSTGRES_DB: ${POSTGRES_DB}
       POSTGRES_USER: ${POSTGRES_USER}
@@ -96,18 +96,18 @@
       AIS_LOG_DIR: /app/logs
       LOG_LEVEL: INFO
     volumes:
-      - ./data/vessel_images:/app/images
-      - ./logs:/app/logs
+      - ../../data/vessel_images:/app/images
+      - ../../logs:/app/logs
 
   maritime_database_scraper:
     build:
-      context: ./AIS_scrapers
+      context: ../../AIS_scrapers
       dockerfile: maritime_database/Dockerfile
     restart: unless-stopped
     depends_on:
       db:
         condition: service_healthy
-    env_file: .env
+    env_file: ../../.env
     environment:
       POSTGRES_DB: ${POSTGRES_DB}
       POSTGRES_USER: ${POSTGRES_USER}
@@ -118,5 +118,5 @@
       AIS_LOG_DIR: /app/logs
       LOG_LEVEL: INFO
     volumes:
-      - ./data/vessel_images:/app/images
-      - ./logs:/app/logs
+      - ../../data/vessel_images:/app/images
+      - ../../logs:/app/logs
