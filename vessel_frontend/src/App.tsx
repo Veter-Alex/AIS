@@ -1,5 +1,4 @@
 import { Route, Routes } from "react-router-dom";
-import AiAssistantPage from "./pages/AiAssistantPage";
 import VesselDetailPage from "./pages/VesselDetailPage";
 import VesselListPage from "./pages/VesselListPage";
 
@@ -15,7 +14,6 @@ function App() {
       {/* Все маршруты приложения сконцентрированы в одном месте для предсказуемой навигации. */}
       <Routes>
         <Route path="/" element={<VesselListPage />} />
-        <Route path="/ai" element={<AiAssistantPage />} />
         <Route path="/vessel/:imo" element={<VesselDetailPage />} />
       </Routes>
     </div>

@@ -1,6 +1,6 @@
 """Начальная схема: public (vessels, source_priority, scraper_state) + ai.*.
 
-Бывшие init.sql и ai_agent/sql/001_ai_schema.sql; дальнейшие изменения — новыми
+Бывшие init.sql и историческая AI-схема; дальнейшие изменения — новыми
 ревизиями Alembic.
 
 Revision ID: 0001_initial

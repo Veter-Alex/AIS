@@ -1,6 +1,5 @@
 import { useQuery } from "@tanstack/react-query";
 import React, { useEffect, useState } from "react";
-import { Link } from "react-router-dom";
 import { vesselApi } from "../api/vesselApi";
 import ExportButton from "../components/ExportButton";
 import FilterPanel from "../components/FilterPanel";
@@ -16,7 +15,7 @@ import type { VesselFilters } from "../types/vessel";
 // - фильтрацию и поиск;
 // - переключение режимов отображения (карточки/таблица);
 // - пагинацию и экспорт;
-// - переход к AI-поиску и карточке судна.
+// - переход к карточке судна.
 const VesselListPage: React.FC = () => {
   const [viewMode, setViewMode] = useState<"cards" | "table">("cards");
   const [searchInput, setSearchInput] = useState("");
@@ -101,12 +100,6 @@ const VesselListPage: React.FC = () => {
               База данных судов
             </h1>
             <div className="flex gap-4">
-              <Link
-                to="/ai"
-                className="inline-flex items-center rounded-lg border border-cyan-500/30 bg-cyan-500/10 px-4 py-2 text-sm font-medium text-cyan-200 transition-colors hover:bg-cyan-500/20"
-              >
-                AI-поиск
-              </Link>
               <ExportButton filters={filters} />
             </div>
           </div>

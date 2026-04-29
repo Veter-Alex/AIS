@@ -17,13 +17,11 @@ ingestion из нескольких источников, хранение, API-
 Система включает:
 - PostgreSQL (с поддержкой pgvector);
 - API по судам (vessel_api);
-- AI Agent (RAG, retrieval, локальные LLM через Ollama);
 - frontend на React + TypeScript;
 - набор скраперов для разных источников.
 
 ## Актуальная структура
 
-- ai_agent/ — AI-сервис (FastAPI, retrieval, RAG, управление LLM-моделями)
 - vessel_api/ — основной API каталога судов
 - vessel_frontend/ — веб-интерфейс (список, карточка, AI-страница)
 - AIS_scrapers/ — скраперы:
@@ -80,8 +78,6 @@ Legacy alias для обратной совместимости: `docker-compose
 Сервисы по умолчанию:
 - Frontend: http://localhost:3000
 - Vessel API: http://localhost:8000
-- AI Agent API: http://localhost:8100
-- Ollama API: http://localhost:11434
 - PostgreSQL: localhost:5432
 
 Проверка здоровья API:
@@ -89,7 +85,6 @@ Legacy alias для обратной совместимости: `docker-compose
 ```bash
 curl http://localhost:8000/health
 curl http://localhost:8000/ready
-curl http://localhost:8100/health
 ```
 
 ## Схема базы данных (Alembic)
@@ -115,19 +110,6 @@ API поддерживает заметки к карточке судна и с
 - `POST /sync/notes/push`
 
 Runbook по синхронизации: **[deploy/runbooks/sync-notes.md](deploy/runbooks/sync-notes.md)**.
-
-## AI возможности
-
-AI Agent поддерживает:
-- retrieval режимы: hybrid, vector, lexical, exact;
-- диагностику retrieval через /retrieve/diagnostics;
-- RAG-ответы через /rag/answer;
-- управление локальными моделями через:
-	- /llm/models
-	- /llm/pull-model
-	- /llm/delete-model
-
-Для видеокарт уровня 4 ГБ VRAM рекомендуется использовать компактные модели 3b в Q4.
 
 ## Локальная разработка frontend
 
@@ -169,7 +151,7 @@ py -3.11 -m venv .venv
 Пересборка AI и frontend:
 
 ```bash
-docker compose up -d --build ai_agent vessel_frontend
+docker compose up -d --build vessel_frontend vessel_api
 ```
 
 Профильные команды:
@@ -184,10 +166,10 @@ make logs-offline
 make down-offline
 ```
 
-Просмотр логов AI:
+Просмотр логов API:
 
 ```bash
-docker compose logs -f ai_agent
+docker compose logs -f vessel_api
 ```
 
 ## Миграция и offline

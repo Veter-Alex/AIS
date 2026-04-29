@@ -32,7 +32,6 @@ E:\Programming\Projects\Python\AIS\
 ├── init.sql                 # Справочно; схема из docker-compose задаётся через Alembic
 ├── ais_shared/            # Общий код API (пул БД, логи)
 ├── vessel_api/
-├── ai_agent/
 └── AIS_scrapers/
 ```
 
@@ -62,7 +61,6 @@ New-Item -ItemType Directory -Force -Path docker_images
 # Сохранить образы (имена тегов подставьте из docker images)
 docker save pgvector/pgvector:pg15 -o docker_images/pgvector_pg15.tar
 docker save ais-vessel_api:latest -o docker_images/vessel_api.tar
-docker save ais-ai_agent:latest -o docker_images/ai_agent.tar
 
 # Архивировать образы
 Compress-Archive -Path docker_images -DestinationPath docker_images.zip
@@ -95,7 +93,6 @@ Expand-Archive -Path docker_images.zip -DestinationPath .
 ```powershell
 docker load -i docker_images/pgvector_pg15.tar
 docker load -i docker_images/vessel_api.tar
-docker load -i docker_images/ai_agent.tar
 ```
 
 ### 4. Запустить контейнеры
