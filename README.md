@@ -41,6 +41,18 @@ ingestion из нескольких источников, хранение, API-
 docker compose up -d
 ```
 
+## Развертывание на Raspberry Pi
+
+Для долгого сбора данных (24/7) на Raspberry Pi используйте отдельный стек:
+
+```bash
+docker compose -f docker-compose.rpi.yml up -d --build
+```
+
+Он поднимает `db`, `vessel_api`, `vessel_frontend` и 3 скрапера в режиме `full`.
+Подробная инструкция (SSH, `.env`, мониторинг, `systemd` автозапуск) в
+**[DEPLOY_RPI.md](DEPLOY_RPI.md)**.
+
 Сервисы по умолчанию:
 - Frontend: http://localhost:3000
 - Vessel API: http://localhost:8000
@@ -135,7 +147,7 @@ docker compose logs -f ai_agent
 
 - Инструкции по миграции: README_MIGRATION.md
 - Инструкции по БД: README_DB.txt
-- Offline-развертывание: AIS_offline_package/DEPLOY_GUIDE.md
+- Развертывание на Raspberry Pi: DEPLOY_RPI.md
 
 ## Примечания по репозиторию
 

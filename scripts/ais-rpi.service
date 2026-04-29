@@ -1,0 +1,22 @@
+﻿[Unit]
+Description=AIS data collection stack (Raspberry Pi)
+Requires=docker.service
+After=docker.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+WorkingDirectory=/home/veteran/AIS
+Environment=PROJECT_DIR=/home/veteran/AIS
+Environment=COMPOSE_FILE=docker-compose.rpi.yml
+ExecStartPre=/usr/bin/test -x /usr/bin/docker
+ExecStartPre=/usr/bin/test -d /home/veteran/AIS
+ExecStartPre=/usr/bin/test -f /home/veteran/AIS/docker-compose.rpi.yml
+ExecStartPre=/usr/bin/docker info
+ExecStart=/home/veteran/AIS/scripts/rpi-stack-up.sh
+ExecStop=/home/veteran/AIS/scripts/rpi-stack-down.sh
+TimeoutStartSec=0
+
+[Install]
+WantedBy=multi-user.target
