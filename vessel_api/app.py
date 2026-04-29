@@ -16,6 +16,7 @@ import csv
 import json
 import logging
 import os
+import uuid
 from datetime import datetime
 from io import BytesIO, StringIO
 from pathlib import Path
@@ -111,10 +112,69 @@ class VesselUpdate(BaseModel):
     description: str | None = None
 
 
+class VesselNote(BaseModel):
+    note_uuid: str
+    vessel_id: int
+    body: str
+    author: str | None = None
+    source_node: str
+    sync_version: int
+    created_at: str
+    updated_at: str
+    deleted_at: str | None = None
+
+
+class VesselNoteCreate(BaseModel):
+    body: str
+    author: str | None = None
+
+
+class VesselNoteUpdate(BaseModel):
+    body: str | None = None
+    author: str | None = None
+    deleted: bool | None = None
+
+
+class NotesPullRequest(BaseModel):
+    since: str | None = None
+    limit: int = 500
+
+
+class NotesPushItem(BaseModel):
+    note_uuid: str
+    vessel_imo_or_mmsi: str
+    body: str
+    author: str | None = None
+    source_node: str = "remote"
+    sync_version: int = 1
+    created_at: str
+    updated_at: str
+    deleted_at: str | None = None
+
+
+class NotesPushRequest(BaseModel):
+    source_node: str
+    notes: list[NotesPushItem]
+
+
 class StatsResponse(BaseModel):
     total_vessels: int
     vessel_types: list[dict]
     flags: list[dict]
+
+
+class ScraperStatus(BaseModel):
+    scraper_name: str
+    mode: str
+    last_page: int
+    vessels_count: int
+    last_run_at: str | None
+
+
+class ScraperMonitorResponse(BaseModel):
+    total_scrapers: int
+    total_vessels: int
+    states: list[ScraperStatus]
 
 
 @app.get("/health")
@@ -135,6 +195,376 @@ def ready() -> dict[str, str]:
             status_code=503, detail="database unavailable"
         ) from exc
     return {"status": "ready"}
+
+
+@app.get("/monitor/scrapers", response_model=ScraperMonitorResponse)
+def monitor_scrapers() -> dict:
+    """Состояние ingestion-контуров по таблице scraper_state."""
+    try:
+        with get_db_cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute(
+                """
+                SELECT scraper_name, mode, last_page, vessels_count, last_run_at
+                FROM scraper_state
+                ORDER BY scraper_name, mode
+                """
+            )
+            rows = cur.fetchall()
+            cur.execute("SELECT COUNT(*) AS total FROM vessels")
+            total_vessels = cur.fetchone()["total"]
+
+        states = []
+        for row in rows:
+            states.append(
+                {
+                    "scraper_name": row["scraper_name"],
+                    "mode": row["mode"],
+                    "last_page": row["last_page"],
+                    "vessels_count": row["vessels_count"],
+                    "last_run_at": (
+                        row["last_run_at"].isoformat()
+                        if row["last_run_at"]
+                        else None
+                    ),
+                }
+            )
+        return {
+            "total_scrapers": len(states),
+            "total_vessels": total_vessels,
+            "states": states,
+        }
+    except Exception as exc:
+        _raise_internal_error(exc, "monitor_scrapers")
+
+
+@app.get("/metrics")
+def metrics() -> StreamingResponse:
+    """Экспорт базовых метрик ingestion для Prometheus."""
+    try:
+        with get_db_cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute("SELECT COUNT(*) AS total FROM vessels")
+            total_vessels = cur.fetchone()["total"]
+            cur.execute(
+                """
+                SELECT scraper_name, mode, last_page, vessels_count
+                FROM scraper_state
+                ORDER BY scraper_name, mode
+                """
+            )
+            rows = cur.fetchall()
+
+        lines = [
+            "# HELP ais_vessels_total Total vessels in database.",
+            "# TYPE ais_vessels_total gauge",
+            f"ais_vessels_total {int(total_vessels)}",
+            "# HELP ais_scraper_last_page Last scraped page per scraper/mode.",
+            "# TYPE ais_scraper_last_page gauge",
+            "# HELP ais_scraper_vessels_count Vessels processed per scraper/mode.",
+            "# TYPE ais_scraper_vessels_count gauge",
+        ]
+        for row in rows:
+            name = str(row["scraper_name"]).replace('"', '\\"')
+            mode = str(row["mode"]).replace('"', '\\"')
+            lines.append(
+                f'ais_scraper_last_page{{scraper="{name}",mode="{mode}"}} '
+                f"{int(row['last_page'])}"
+            )
+            lines.append(
+                f'ais_scraper_vessels_count{{scraper="{name}",mode="{mode}"}} '
+                f"{int(row['vessels_count'])}"
+            )
+        payload = "\n".join(lines) + "\n"
+        return StreamingResponse(
+            BytesIO(payload.encode("utf-8")),
+            media_type="text/plain; version=0.0.4; charset=utf-8",
+        )
+    except Exception as exc:
+        _raise_internal_error(exc, "metrics")
+
+
+def _serialize_note_row(row: dict) -> dict:
+    return {
+        "note_uuid": row["note_uuid"],
+        "vessel_id": row["vessel_id"],
+        "body": row["body"],
+        "author": row["author"],
+        "source_node": row["source_node"],
+        "sync_version": row["sync_version"],
+        "created_at": row["created_at"].isoformat(),
+        "updated_at": row["updated_at"].isoformat(),
+        "deleted_at": (
+            row["deleted_at"].isoformat() if row["deleted_at"] else None
+        ),
+    }
+
+
+def _get_vessel_id_by_key(cur, imo_or_mmsi: str) -> int:
+    cur.execute(
+        "SELECT id FROM vessels WHERE imo = %s OR mmsi = %s",
+        (imo_or_mmsi, imo_or_mmsi),
+    )
+    vessel = cur.fetchone()
+    if not vessel:
+        raise HTTPException(status_code=404, detail="Vessel not found")
+    return vessel["id"]
+
+
+@app.get("/vessels/{imo}/notes", response_model=list[VesselNote])
+def get_vessel_notes(imo: str, include_deleted: bool = Query(False)):
+    try:
+        with get_db_cursor(cursor_factory=RealDictCursor) as cur:
+            vessel_id = _get_vessel_id_by_key(cur, imo)
+            if include_deleted:
+                cur.execute(
+                    """
+                    SELECT note_uuid, vessel_id, body, author, source_node,
+                           sync_version, created_at, updated_at, deleted_at
+                    FROM vessel_notes
+                    WHERE vessel_id = %s
+                    ORDER BY updated_at DESC
+                    """,
+                    (vessel_id,),
+                )
+            else:
+                cur.execute(
+                    """
+                    SELECT note_uuid, vessel_id, body, author, source_node,
+                           sync_version, created_at, updated_at, deleted_at
+                    FROM vessel_notes
+                    WHERE vessel_id = %s AND deleted_at IS NULL
+                    ORDER BY updated_at DESC
+                    """,
+                    (vessel_id,),
+                )
+            rows = cur.fetchall()
+        return [_serialize_note_row(row) for row in rows]
+    except HTTPException:
+        raise
+    except Exception as exc:
+        _raise_internal_error(exc, "get_vessel_notes")
+
+
+@app.post("/vessels/{imo}/notes", response_model=VesselNote)
+def create_vessel_note(imo: str, payload: VesselNoteCreate):
+    body = payload.body.strip()
+    if not body:
+        raise HTTPException(status_code=400, detail="Note body is empty")
+    try:
+        with get_db_cursor(cursor_factory=RealDictCursor, commit=True) as cur:
+            vessel_id = _get_vessel_id_by_key(cur, imo)
+            note_uuid = str(uuid.uuid4())
+            cur.execute(
+                """
+                INSERT INTO vessel_notes (
+                    note_uuid, vessel_id, body, author, source_node, sync_version
+                )
+                VALUES (%s, %s, %s, %s, %s, 1)
+                RETURNING note_uuid, vessel_id, body, author, source_node,
+                          sync_version, created_at, updated_at, deleted_at
+                """,
+                (note_uuid, vessel_id, body, payload.author, "local"),
+            )
+            row = cur.fetchone()
+        return _serialize_note_row(row)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        _raise_internal_error(exc, "create_vessel_note")
+
+
+@app.patch("/notes/{note_uuid}", response_model=VesselNote)
+def update_vessel_note(note_uuid: str, payload: VesselNoteUpdate):
+    try:
+        with get_db_cursor(cursor_factory=RealDictCursor, commit=True) as cur:
+            cur.execute(
+                """
+                SELECT note_uuid, vessel_id, body, author, source_node,
+                       sync_version, created_at, updated_at, deleted_at
+                FROM vessel_notes
+                WHERE note_uuid = %s
+                """,
+                (note_uuid,),
+            )
+            existing = cur.fetchone()
+            if not existing:
+                raise HTTPException(status_code=404, detail="Note not found")
+
+            body = (
+                payload.body.strip()
+                if payload.body is not None
+                else existing["body"]
+            )
+            if not body:
+                raise HTTPException(
+                    status_code=400, detail="Note body is empty"
+                )
+            author = (
+                payload.author
+                if payload.author is not None
+                else existing["author"]
+            )
+            deleted_at = existing["deleted_at"]
+            if payload.deleted is True:
+                deleted_at = datetime.utcnow()
+            elif payload.deleted is False:
+                deleted_at = None
+
+            cur.execute(
+                """
+                UPDATE vessel_notes
+                SET body = %s,
+                    author = %s,
+                    deleted_at = %s,
+                    sync_version = sync_version + 1,
+                    updated_at = NOW()
+                WHERE note_uuid = %s
+                RETURNING note_uuid, vessel_id, body, author, source_node,
+                          sync_version, created_at, updated_at, deleted_at
+                """,
+                (body, author, deleted_at, note_uuid),
+            )
+            row = cur.fetchone()
+        return _serialize_note_row(row)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        _raise_internal_error(exc, "update_vessel_note")
+
+
+@app.delete("/notes/{note_uuid}", response_model=VesselNote)
+def delete_vessel_note(note_uuid: str):
+    return update_vessel_note(note_uuid, VesselNoteUpdate(deleted=True))
+
+
+@app.post("/sync/notes/pull")
+def sync_notes_pull(payload: NotesPullRequest):
+    limit = min(max(payload.limit, 1), 2000)
+    try:
+        with get_db_cursor(cursor_factory=RealDictCursor) as cur:
+            if payload.since:
+                since_ts = datetime.fromisoformat(payload.since)
+                cur.execute(
+                    """
+                    SELECT n.note_uuid, n.vessel_id, n.body, n.author,
+                           n.source_node, n.sync_version, n.created_at,
+                           n.updated_at, n.deleted_at, v.imo, v.mmsi
+                    FROM vessel_notes n
+                    JOIN vessels v ON v.id = n.vessel_id
+                    WHERE n.updated_at > %s
+                    ORDER BY n.updated_at ASC
+                    LIMIT %s
+                    """,
+                    (since_ts, limit),
+                )
+            else:
+                cur.execute(
+                    """
+                    SELECT n.note_uuid, n.vessel_id, n.body, n.author,
+                           n.source_node, n.sync_version, n.created_at,
+                           n.updated_at, n.deleted_at, v.imo, v.mmsi
+                    FROM vessel_notes n
+                    JOIN vessels v ON v.id = n.vessel_id
+                    ORDER BY n.updated_at ASC
+                    LIMIT %s
+                    """,
+                    (limit,),
+                )
+            rows = cur.fetchall()
+
+        notes = []
+        last_sync = payload.since
+        for row in rows:
+            serialized = _serialize_note_row(row)
+            serialized["vessel_imo_or_mmsi"] = row["imo"] or row["mmsi"]
+            notes.append(serialized)
+            last_sync = serialized["updated_at"]
+        return {"notes": notes, "next_since": last_sync}
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=400, detail="Invalid 'since' timestamp format"
+        ) from exc
+    except Exception as exc:
+        _raise_internal_error(exc, "sync_notes_pull")
+
+
+@app.post("/sync/notes/push")
+def sync_notes_push(payload: NotesPushRequest):
+    upserted = 0
+    skipped = 0
+    try:
+        with get_db_cursor(cursor_factory=RealDictCursor, commit=True) as cur:
+            for note in payload.notes:
+                vessel_id = _get_vessel_id_by_key(cur, note.vessel_imo_or_mmsi)
+                created_at = datetime.fromisoformat(note.created_at)
+                updated_at = datetime.fromisoformat(note.updated_at)
+                deleted_at = (
+                    datetime.fromisoformat(note.deleted_at)
+                    if note.deleted_at
+                    else None
+                )
+
+                cur.execute(
+                    """
+                    SELECT sync_version, updated_at
+                    FROM vessel_notes
+                    WHERE note_uuid = %s
+                    """,
+                    (note.note_uuid,),
+                )
+                existing = cur.fetchone()
+                should_apply = existing is None
+                if existing:
+                    existing_version = int(existing["sync_version"])
+                    existing_updated = existing["updated_at"]
+                    should_apply = note.sync_version > existing_version or (
+                        note.sync_version == existing_version
+                        and updated_at > existing_updated
+                    )
+
+                if not should_apply:
+                    skipped += 1
+                    continue
+
+                cur.execute(
+                    """
+                    INSERT INTO vessel_notes (
+                        note_uuid, vessel_id, body, author, source_node,
+                        sync_version, created_at, updated_at, deleted_at
+                    )
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    ON CONFLICT (note_uuid) DO UPDATE
+                    SET vessel_id = EXCLUDED.vessel_id,
+                        body = EXCLUDED.body,
+                        author = EXCLUDED.author,
+                        source_node = EXCLUDED.source_node,
+                        sync_version = EXCLUDED.sync_version,
+                        created_at = EXCLUDED.created_at,
+                        updated_at = EXCLUDED.updated_at,
+                        deleted_at = EXCLUDED.deleted_at
+                    """,
+                    (
+                        note.note_uuid,
+                        vessel_id,
+                        note.body,
+                        note.author,
+                        note.source_node or payload.source_node,
+                        note.sync_version,
+                        created_at,
+                        updated_at,
+                        deleted_at,
+                    ),
+                )
+                upserted += 1
+        return {"upserted": upserted, "skipped": skipped}
+    except HTTPException:
+        raise
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=400,
+            detail="Invalid timestamp format in notes payload",
+        ) from exc
+    except Exception as exc:
+        _raise_internal_error(exc, "sync_notes_push")
 
 
 @app.get("/vessels/", response_model=VesselListResponse)

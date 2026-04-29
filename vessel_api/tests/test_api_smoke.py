@@ -1,5 +1,6 @@
 import sys
 from contextlib import contextmanager
+from datetime import datetime
 from pathlib import Path
 
 from fastapi.testclient import TestClient
@@ -16,7 +17,21 @@ class _FakeCursor:
         self._single = None
 
     def execute(self, query, params=None):
+        if "FROM scraper_state" in query:
+            self._rows = [
+                {
+                    "scraper_name": "marinetraffic",
+                    "mode": "full",
+                    "last_page": 12,
+                    "vessels_count": 120,
+                    "last_run_at": datetime(2026, 1, 1, 0, 0, 0),
+                }
+            ]
+            return
         if "COUNT(*) as total" in query:
+            self._single = {"total": 1}
+            return
+        if "COUNT(*) AS total FROM vessels" in query:
             self._single = {"total": 1}
             return
         if "FROM vessels" in query and "LIMIT" in query:
@@ -93,3 +108,21 @@ def test_ready_503_when_db_unavailable(monkeypatch):
     client = TestClient(vessel_app.app)
     resp = client.get("/ready")
     assert resp.status_code == 503
+
+
+def test_monitor_scrapers(monkeypatch):
+    monkeypatch.setattr(vessel_app, "get_db_cursor", _fake_db_cursor)
+    client = TestClient(vessel_app.app)
+    resp = client.get("/monitor/scrapers")
+    assert resp.status_code == 200
+    payload = resp.json()
+    assert payload["total_scrapers"] == 1
+    assert payload["states"][0]["scraper_name"] == "marinetraffic"
+
+
+def test_metrics_endpoint(monkeypatch):
+    monkeypatch.setattr(vessel_app, "get_db_cursor", _fake_db_cursor)
+    client = TestClient(vessel_app.app)
+    resp = client.get("/metrics")
+    assert resp.status_code == 200
+    assert "ais_vessels_total" in resp.text
