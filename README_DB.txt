@@ -1,34 +1,50 @@
 # Работа с PostgreSQL и схемой (Alembic)
 
-# Схема БД (таблицы public.* и ai.*) задаётся миграциями Alembic в каталоге alembic/.
-# Файл init.sql в корне репозитория устарел и не монтируется в docker-compose;
-# он оставлен только для справки и ручных сценариев.
+Схема БД поддерживается миграциями Alembic из каталога `alembic/`.
+При запуске `vessel_api` автоматически выполняется `alembic upgrade head`.
 
-# --- Docker Compose (рекомендуется)
-# При старте контейнера vessel_api выполняется: alembic upgrade head, затем uvicorn.
-# Отдельно накатывать SQL обычно не нужно.
-# Профили:
-#   - ingestion: deploy/compose/ingestion.yml
-#   - offline-use: deploy/compose/use-offline.yml
+## Compose-профили
 
-# --- Локально (хост), из корня репозитория
-# Установить зависимости миграций (те же, что у vessel_api):
-#   pip install -r vessel_api/requirements.txt
-# Переменные окружения как в .env, но для локального Postgres:
-#   POSTGRES_HOST=localhost
-#   POSTGRES_PORT=5432
-#   POSTGRES_DB=vessels_db
-#   POSTGRES_USER=user
-#   POSTGRES_PASSWORD=password
-# Применить миграции:
-#   alembic upgrade head
+- ingestion: `deploy/compose/ingestion.yml`
+- offline-use: `deploy/compose/use-offline.yml`
 
-# --- Вручную из уже запущенного контейнера API (если нужен повторный прогон)
-# docker compose -f deploy/compose/use-offline.yml exec vessel_api alembic upgrade head
+## Стандартный сценарий (рекомендуется)
 
-# --- Проверка версии миграций в БД
-# docker compose -f deploy/compose/use-offline.yml exec db psql -U user -d vessels_db -c "SELECT * FROM alembic_version;"
+Запустите нужный профиль через `make` или `docker compose` — отдельный ручной прогон SQL не требуется.
 
-# Старый способ через init.sql в entrypoint Postgres больше не используется:
-#   ~~docker exec -i <container_id> psql ... < init.sql~~
-#   ~~volume: ./init.sql:/docker-entrypoint-initdb.d/init.sql~~
+## Локальный прогон миграций (хост)
+
+Из корня репозитория:
+
+```bash
+pip install -r vessel_api/requirements.txt
+alembic upgrade head
+```
+
+Перед запуском задайте `POSTGRES_*` переменные (аналогично `.env`), например:
+
+```bash
+POSTGRES_HOST=localhost
+POSTGRES_PORT=5432
+POSTGRES_DB=vessels_db
+POSTGRES_USER=user
+POSTGRES_PASSWORD=password
+```
+
+## Полезные проверки
+
+Повторно применить миграции в запущенном API-контейнере:
+
+```bash
+docker compose -f deploy/compose/use-offline.yml exec vessel_api alembic upgrade head
+```
+
+Проверить текущую версию миграций:
+
+```bash
+docker compose -f deploy/compose/use-offline.yml exec db psql -U user -d vessels_db -c "SELECT * FROM alembic_version;"
+```
+
+## Справка по старой инициализации
+
+Историческая SQL-версия хранится в `docs/legacy/init.sql` и не участвует в текущем процессе развертывания.

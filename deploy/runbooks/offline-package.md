@@ -1,24 +1,27 @@
-# Offline Data Package Contract
+# Offline Package Contract
 
-## Bundle format
+## Purpose
+Define a versioned offline package format for transferring data between ingestion and offline nodes.
+
+## Package format
 - Archive: `offline_bundle_<timestamp>.tar.gz`
-- Required files:
+- Required contents:
   - `db.dump` (PostgreSQL custom format, `pg_dump -Fc`)
   - `vessel_images/`
   - `manifest.json`
   - `checksums.sha256`
 
-## Schema/version contract
-- `manifest.json.schema_version` must be incremented on breaking DB changes.
-- Alembic migration changelog is source of truth for schema updates.
+## Versioning rules
+- `manifest.json.schema_version` is incremented on breaking DB changes.
+- Alembic migration history is the source of truth for schema evolution.
 
-## Export
+## Export package
 ```bash
 chmod +x deploy/offline/export_offline_bundle.sh
 POSTGRES_USER=user POSTGRES_DB=vessels_db deploy/offline/export_offline_bundle.sh v1
 ```
 
-## Restore
+## Restore package
 ```bash
 chmod +x deploy/offline/restore_offline_bundle.sh
 POSTGRES_USER=user POSTGRES_DB=vessels_db deploy/offline/restore_offline_bundle.sh backups/offline_bundle_*.tar.gz

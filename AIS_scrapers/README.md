@@ -45,7 +45,7 @@ set SCRAPER_MODE=test
 
 ## Важные заметки
 
-- Перед запуском убедитесь, что доступна PostgreSQL и применены миграции: из корня репозитория `alembic upgrade head` (те же правила, что для `vessel_api` в Docker). Старый `init.sql` оставлен только для справки.
+- Перед запуском убедитесь, что доступна PostgreSQL и применены миграции: из корня репозитория `alembic upgrade head` (те же правила, что для `vessel_api` в Docker).
 - В скраперах включены preflight-проверки схемы (`vessels.mmsi UNIQUE`, `scraper_state(scraper_name, mode)`).
 - Для production-проходов используйте Docker Compose и ENV-конфигурацию.
 

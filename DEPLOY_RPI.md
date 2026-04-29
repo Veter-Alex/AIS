@@ -92,7 +92,6 @@ docker compose -f deploy/compose/ingestion.yml down
 ## Автозапуск после ребута (systemd unit)
 
 В репозитории уже есть:
-- `scripts/ais-rpi.service`
 - `scripts/rpi-stack-up.sh`
 - `scripts/rpi-stack-down.sh`
 - `deploy/systemd/ais-ingestion.service`

@@ -12,7 +12,7 @@
 ## О проекте
 
 AIS - модульная платформа для сбора и обработки данных о судах, которая объединяет
-ingestion из нескольких источников, хранение, API-доступ и AI-сценарии для морских задач.
+ingestion из нескольких источников, хранение и API-доступ для морских задач.
 
 Система включает:
 - PostgreSQL (с поддержкой pgvector);
@@ -23,14 +23,12 @@ ingestion из нескольких источников, хранение, API-
 ## Актуальная структура
 
 - vessel_api/ — основной API каталога судов
-- vessel_frontend/ — веб-интерфейс (список, карточка, AI-страница)
+- vessel_frontend/ — веб-интерфейс (список и карточка судна)
 - AIS_scrapers/ — скраперы:
 	- marinetraffic/
 	- maritime_database/
 	- myshiptracking/
 	- vesselfinder/
-- sync_db_scripts/ — синхронизация PostgreSQL -> SQLite
-- AIS_offline_package/ — offline-пакет развертывания
 - data/ — локальные данные (PostgreSQL, изображения)
 
 ## Режимы запуска
@@ -73,8 +71,6 @@ docker compose -f deploy/compose/ingestion.yml up -d --build
 Подробная инструкция (`.env`, мониторинг, `systemd` автозапуск) в
 **[DEPLOY_RPI.md](DEPLOY_RPI.md)**.
 
-Legacy alias для обратной совместимости: `docker-compose.rpi.yml`.
-
 Сервисы по умолчанию:
 - Frontend: http://localhost:3000
 - Vessel API: http://localhost:8000
@@ -98,7 +94,7 @@ pip install -r vessel_api/requirements.txt
 alembic upgrade head
 ```
 
-Подробности (ручной прогон в Docker, таблица **`alembic_version`**, устаревший **`init.sql`**) — в **[README_DB.txt](README_DB.txt)**.
+Подробности по миграциям и проверке версии — в **[README_DB.txt](README_DB.txt)**.
 
 ## Заметки и синхронизация
 
@@ -148,7 +144,7 @@ py -3.11 -m venv .venv
 
 ## Полезные команды
 
-Пересборка AI и frontend:
+Пересборка frontend и API:
 
 ```bash
 docker compose up -d --build vessel_frontend vessel_api
@@ -172,14 +168,14 @@ make down-offline
 docker compose logs -f vessel_api
 ```
 
-## Миграция и offline
+## Документация и runbooks
 
-- Инструкции по миграции: README_MIGRATION.md
-- Инструкции по БД: README_DB.txt
-- Развертывание на Raspberry Pi: DEPLOY_RPI.md
-- Runbook ingestion: deploy/runbooks/ingestion.md
-- Runbook offline use: deploy/runbooks/offline-use.md
-- Контракт offline package: deploy/runbooks/offline-package.md
+- Перенос данных между узлами: `README_MIGRATION.md`
+- Работа с БД и Alembic: `README_DB.txt`
+- Развертывание на Raspberry Pi: `DEPLOY_RPI.md`
+- Runbook ingestion: `deploy/runbooks/ingestion.md`
+- Runbook offline use: `deploy/runbooks/offline-use.md`
+- Контракт offline package: `deploy/runbooks/offline-package.md`
 
 ## Примечания по репозиторию
 

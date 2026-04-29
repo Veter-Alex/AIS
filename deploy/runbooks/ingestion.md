@@ -1,7 +1,10 @@
-# Ingestion Mode Runbook
+# Ingestion Runbook
 
 ## Purpose
-Continuous online data accumulation from maritime sources.
+Run the ingestion node for continuous online data accumulation from maritime sources.
+
+## Node role
+- Ingestion node: collects and updates vessel data.
 
 ## Stack
 - `db`
@@ -10,14 +13,14 @@ Continuous online data accumulation from maritime sources.
 - `myshiptracking_scraper`
 - `maritime_database_scraper`
 
-Compose file: `deploy/compose/ingestion.yml`
+Compose profile: `deploy/compose/ingestion.yml`
 
 ## Start
 ```bash
 make up-ingestion
 ```
 
-## Monitor
+## Verify
 ```bash
 curl http://localhost:8000/health
 curl http://localhost:8000/ready

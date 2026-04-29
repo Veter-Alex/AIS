@@ -1,16 +1,20 @@
 # Notes Sync Runbook
 
-## Direction
-Online ingestion node `<->` offline use node.
+## Purpose
+Synchronize vessel notes between ingestion node and offline node.
 
-## Pull from remote
+## Node roles
+- Ingestion node: primary online data source.
+- Offline node: local consumer node that exchanges notes.
+
+## Pull notes
 ```bash
 curl -X POST http://localhost:8000/sync/notes/pull \
   -H "Content-Type: application/json" \
   -d '{"since": null, "limit": 500}'
 ```
 
-## Push to remote
+## Push notes
 ```bash
 curl -X POST http://localhost:8000/sync/notes/push \
   -H "Content-Type: application/json" \
@@ -18,5 +22,5 @@ curl -X POST http://localhost:8000/sync/notes/push \
 ```
 
 ## Conflict policy
-- `sync_version` wins.
-- If equal version, newer `updated_at` wins.
+- Higher `sync_version` wins.
+- If `sync_version` is equal, newer `updated_at` wins.

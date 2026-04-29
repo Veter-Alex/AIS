@@ -1,21 +1,24 @@
-# Offline Use Mode Runbook
+# Offline Use Runbook
 
 ## Purpose
-Use accumulated database without internet: browse, search, filter, edit, notes.
+Run the offline node to use already accumulated data without internet access.
+
+## Node role
+- Offline node: browse, search, filter, edit, and manage notes.
 
 ## Stack
 - `db`
 - `vessel_api`
 - `vessel_frontend`
 
-Compose file: `deploy/compose/use-offline.yml`
+Compose profile: `deploy/compose/use-offline.yml`
 
 ## Start
 ```bash
 make up-offline
 ```
 
-## Access
+## Verify
 - Frontend: `http://localhost:3000`
 - API docs: `http://localhost:8000/docs`
 
