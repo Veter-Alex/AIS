@@ -35,23 +35,47 @@ ingestion из нескольких источников, хранение, API-
 - AIS_offline_package/ — offline-пакет развертывания
 - data/ — локальные данные (PostgreSQL, изображения)
 
+## Режимы запуска
+
+Проект поддерживает два официальных режима:
+
+1. **Ingestion mode (online):** `db + scrapers + vessel_api`  
+   Для непрерывного накопления данных. Мониторинг через `/health`, `/ready`,
+   `/monitor/scrapers`, `/metrics`.
+2. **Use mode (offline/consumer):** `db + vessel_api + vessel_frontend`  
+   Для просмотра, поиска, фильтрации, редактирования и ведения заметок.
+
+Ключевые compose-профили:
+- `deploy/compose/ingestion.yml`
+- `deploy/compose/use-offline.yml`
+
 ## Быстрый запуск
 
 ```bash
 docker compose up -d
 ```
 
-## Развертывание на Raspberry Pi
-
-Для долгого сбора данных (24/7) на Raspberry Pi используйте отдельный стек:
+Рекомендуемый запуск по профилям:
 
 ```bash
-docker compose -f docker-compose.rpi.yml up -d --build
+make up-ingestion
+# или
+make up-offline
 ```
 
-Он поднимает `db`, `vessel_api`, `vessel_frontend` и 3 скрапера в режиме `full`.
-Подробная инструкция (SSH, `.env`, мониторинг, `systemd` автозапуск) в
+## Развертывание на Raspberry Pi
+
+Для долгого сбора данных (24/7) на Raspberry Pi используйте ingestion-профиль:
+
+```bash
+docker compose -f deploy/compose/ingestion.yml up -d --build
+```
+
+Он поднимает `db`, `vessel_api` и 3 скрапера в режиме `full`.
+Подробная инструкция (`.env`, мониторинг, `systemd` автозапуск) в
 **[DEPLOY_RPI.md](DEPLOY_RPI.md)**.
+
+Legacy alias для обратной совместимости: `docker-compose.rpi.yml`.
 
 Сервисы по умолчанию:
 - Frontend: http://localhost:3000
@@ -80,6 +104,17 @@ alembic upgrade head
 ```
 
 Подробности (ручной прогон в Docker, таблица **`alembic_version`**, устаревший **`init.sql`**) — в **[README_DB.txt](README_DB.txt)**.
+
+## Заметки и синхронизация
+
+API поддерживает заметки к карточке судна и синхронизацию между online/offline
+узлами:
+- `GET/POST /vessels/{imo}/notes`
+- `PATCH/DELETE /notes/{note_uuid}`
+- `POST /sync/notes/pull`
+- `POST /sync/notes/push`
+
+Runbook по синхронизации: **[deploy/runbooks/sync-notes.md](deploy/runbooks/sync-notes.md)**.
 
 ## AI возможности
 
@@ -137,6 +172,18 @@ py -3.11 -m venv .venv
 docker compose up -d --build ai_agent vessel_frontend
 ```
 
+Профильные команды:
+
+```bash
+make up-ingestion
+make logs-ingestion
+make down-ingestion
+
+make up-offline
+make logs-offline
+make down-offline
+```
+
 Просмотр логов AI:
 
 ```bash
@@ -148,6 +195,9 @@ docker compose logs -f ai_agent
 - Инструкции по миграции: README_MIGRATION.md
 - Инструкции по БД: README_DB.txt
 - Развертывание на Raspberry Pi: DEPLOY_RPI.md
+- Runbook ingestion: deploy/runbooks/ingestion.md
+- Runbook offline use: deploy/runbooks/offline-use.md
+- Контракт offline package: deploy/runbooks/offline-package.md
 
 ## Примечания по репозиторию
 

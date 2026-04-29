@@ -1,5 +1,22 @@
 # Миграция данных на другой компьютер (offline)
 
+## Рекомендуемый workflow (v1)
+
+Для переносов между online/offline узлами используйте контракт пакета данных:
+- спецификация: `deploy/runbooks/offline-package.md`
+- экспорт: `deploy/offline/export_offline_bundle.sh`
+- восстановление: `deploy/offline/restore_offline_bundle.sh`
+
+Пример:
+
+```bash
+POSTGRES_USER=user POSTGRES_DB=vessels_db \
+  deploy/offline/export_offline_bundle.sh v1
+
+POSTGRES_USER=user POSTGRES_DB=vessels_db \
+  deploy/offline/restore_offline_bundle.sh backups/offline_bundle_*.tar.gz
+```
+
 ## Текущая структура
 
 Все данные хранятся на хосте в папке `data/`:

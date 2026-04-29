@@ -7,6 +7,9 @@
 # --- Docker Compose (рекомендуется)
 # При старте контейнера vessel_api выполняется: alembic upgrade head, затем uvicorn.
 # Отдельно накатывать SQL обычно не нужно.
+# Профили:
+#   - ingestion: deploy/compose/ingestion.yml
+#   - offline-use: deploy/compose/use-offline.yml
 
 # --- Локально (хост), из корня репозитория
 # Установить зависимости миграций (те же, что у vessel_api):
@@ -21,10 +24,10 @@
 #   alembic upgrade head
 
 # --- Вручную из уже запущенного контейнера API (если нужен повторный прогон)
-# docker compose exec vessel_api alembic upgrade head
+# docker compose -f deploy/compose/use-offline.yml exec vessel_api alembic upgrade head
 
 # --- Проверка версии миграций в БД
-# docker compose exec db psql -U user -d vessels_db -c "SELECT * FROM alembic_version;"
+# docker compose -f deploy/compose/use-offline.yml exec db psql -U user -d vessels_db -c "SELECT * FROM alembic_version;"
 
 # Старый способ через init.sql в entrypoint Postgres больше не используется:
 #   ~~docker exec -i <container_id> psql ... < init.sql~~
