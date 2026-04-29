@@ -111,6 +111,8 @@ chmod +x scripts/rpi-stack-up.sh scripts/rpi-stack-down.sh
 sudo cp deploy/systemd/ais-ingestion.service /etc/systemd/system/ais-ingestion.service
 sudo systemctl daemon-reload
 sudo systemctl enable --now ais-ingestion.service
+
+После обновления репозитория (`git pull`) важно заново скопировать unit и выполнить `daemon-reload`, иначе systemd продолжит использовать старую версию файла из `/etc/systemd/system/`.
 ```
 
 Проверка статуса:

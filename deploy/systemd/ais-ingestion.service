@@ -14,8 +14,8 @@ ExecStartPre=/usr/bin/test -x /usr/bin/docker
 ExecStartPre=/usr/bin/test -d /home/veteran/AIS
 ExecStartPre=/usr/bin/test -f /home/veteran/AIS/deploy/compose/ingestion.yml
 ExecStartPre=/usr/bin/docker info
-ExecStart=/home/veteran/AIS/scripts/rpi-stack-up.sh
-ExecStop=/home/veteran/AIS/scripts/rpi-stack-down.sh
+ExecStart=/bin/bash /home/veteran/AIS/scripts/rpi-stack-up.sh
+ExecStop=/bin/bash /home/veteran/AIS/scripts/rpi-stack-down.sh
 TimeoutStartSec=0
 
 [Install]
