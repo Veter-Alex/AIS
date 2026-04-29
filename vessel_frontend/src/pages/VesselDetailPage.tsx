@@ -2,7 +2,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import React, { useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { vesselApi } from "../api/vesselApi";
-import type { Vessel, VesselUpdate } from "../types/vessel";
+import type { Vessel, VesselNote, VesselUpdate } from "../types/vessel";
 
 // Детальная страница судна с поддержкой inline-редактирования.
 //
@@ -17,6 +17,10 @@ const VesselDetailPage: React.FC = () => {
 
   const [isEditing, setIsEditing] = useState(false);
   const [editedVessel, setEditedVessel] = useState<Partial<Vessel>>({});
+  const [newNoteBody, setNewNoteBody] = useState("");
+  const [newNoteAuthor, setNewNoteAuthor] = useState("");
+  const [editingNote, setEditingNote] = useState<VesselNote | null>(null);
+  const [editingNoteBody, setEditingNoteBody] = useState("");
 
   const {
     data: vessel,
@@ -33,6 +37,44 @@ const VesselDetailPage: React.FC = () => {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["vessel", imo] });
       setIsEditing(false);
+    },
+  });
+
+  const { data: notes = [] } = useQuery({
+    queryKey: ["vessel-notes", imo],
+    queryFn: () => vesselApi.getVesselNotes(imo!),
+    enabled: !!imo,
+  });
+
+  const createNoteMutation = useMutation({
+    mutationFn: () =>
+      vesselApi.createVesselNote(imo!, {
+        body: newNoteBody,
+        author: newNoteAuthor.trim() || null,
+      }),
+    onSuccess: () => {
+      setNewNoteBody("");
+      setNewNoteAuthor("");
+      queryClient.invalidateQueries({ queryKey: ["vessel-notes", imo] });
+    },
+  });
+
+  const updateNoteMutation = useMutation({
+    mutationFn: () =>
+      vesselApi.updateVesselNote(editingNote!.note_uuid, {
+        body: editingNoteBody,
+      }),
+    onSuccess: () => {
+      setEditingNote(null);
+      setEditingNoteBody("");
+      queryClient.invalidateQueries({ queryKey: ["vessel-notes", imo] });
+    },
+  });
+
+  const deleteNoteMutation = useMutation({
+    mutationFn: (noteUuid: string) => vesselApi.deleteVesselNote(noteUuid),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["vessel-notes", imo] });
     },
   });
 
@@ -92,6 +134,11 @@ const VesselDetailPage: React.FC = () => {
   const handleCancel = () => {
     setIsEditing(false);
     setEditedVessel({});
+  };
+
+  const handleCreateNote = () => {
+    if (!newNoteBody.trim()) return;
+    createNoteMutation.mutate();
   };
 
   if (isLoading) {
@@ -315,6 +362,112 @@ const VesselDetailPage: React.FC = () => {
                       )}
                     </div>
                   )}
+                </div>
+
+                {/* Notes section */}
+                <div className="mt-6 pt-6 border-t border-dark-border">
+                  <h3 className="text-xl font-semibold text-gray-100 mb-3">
+                    Примечания
+                  </h3>
+                  <div className="space-y-3">
+                    <input
+                      type="text"
+                      placeholder="Автор (опционально)"
+                      value={newNoteAuthor}
+                      onChange={(e) => setNewNoteAuthor(e.target.value)}
+                      className="w-full px-3 py-2 bg-dark-bg border border-dark-border rounded text-gray-100"
+                    />
+                    <textarea
+                      value={newNoteBody}
+                      onChange={(e) => setNewNoteBody(e.target.value)}
+                      className="w-full h-28 px-4 py-3 bg-dark-bg border border-dark-border rounded-lg text-gray-300 resize-none"
+                      placeholder="Добавить примечание..."
+                    />
+                    <button
+                      onClick={handleCreateNote}
+                      disabled={createNoteMutation.isPending}
+                      className="px-4 py-2 bg-indigo-600 hover:bg-indigo-700 disabled:bg-gray-600 text-white rounded-lg text-sm transition-colors"
+                    >
+                      {createNoteMutation.isPending
+                        ? "Сохранение..."
+                        : "Добавить примечание"}
+                    </button>
+                  </div>
+
+                  <div className="mt-6 space-y-3">
+                    {notes.length === 0 && (
+                      <p className="text-gray-500 italic">
+                        Примечаний пока нет.
+                      </p>
+                    )}
+                    {notes.map((note) => (
+                      <div
+                        key={note.note_uuid}
+                        className="border border-dark-border rounded-lg p-3 bg-dark-bg"
+                      >
+                        <div className="text-xs text-gray-500 mb-2">
+                          {note.author || "Без автора"} •{" "}
+                          {new Date(note.updated_at).toLocaleString()} • ver{" "}
+                          {note.sync_version}
+                        </div>
+                        {editingNote?.note_uuid === note.note_uuid ? (
+                          <div className="space-y-2">
+                            <textarea
+                              value={editingNoteBody}
+                              onChange={(e) =>
+                                setEditingNoteBody(e.target.value)
+                              }
+                              className="w-full h-24 px-3 py-2 bg-dark-card border border-dark-border rounded text-gray-100 resize-none"
+                            />
+                            <div className="flex gap-2">
+                              <button
+                                onClick={() => updateNoteMutation.mutate()}
+                                disabled={updateNoteMutation.isPending}
+                                className="px-3 py-1 bg-green-600 hover:bg-green-700 text-white rounded text-sm"
+                              >
+                                Сохранить
+                              </button>
+                              <button
+                                onClick={() => {
+                                  setEditingNote(null);
+                                  setEditingNoteBody("");
+                                }}
+                                className="px-3 py-1 bg-gray-600 hover:bg-gray-700 text-white rounded text-sm"
+                              >
+                                Отмена
+                              </button>
+                            </div>
+                          </div>
+                        ) : (
+                          <>
+                            <p className="text-gray-200 whitespace-pre-wrap">
+                              {note.body}
+                            </p>
+                            <div className="mt-2 flex gap-2">
+                              <button
+                                onClick={() => {
+                                  setEditingNote(note);
+                                  setEditingNoteBody(note.body);
+                                }}
+                                className="px-3 py-1 bg-blue-600 hover:bg-blue-700 text-white rounded text-sm"
+                              >
+                                Редактировать
+                              </button>
+                              <button
+                                onClick={() =>
+                                  deleteNoteMutation.mutate(note.note_uuid)
+                                }
+                                disabled={deleteNoteMutation.isPending}
+                                className="px-3 py-1 bg-red-700 hover:bg-red-800 text-white rounded text-sm"
+                              >
+                                Удалить
+                              </button>
+                            </div>
+                          </>
+                        )}
+                      </div>
+                    ))}
+                  </div>
                 </div>
               </div>
             </div>

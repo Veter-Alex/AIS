@@ -4,6 +4,9 @@ import type {
   Vessel,
   VesselFilters,
   VesselListResponse,
+  VesselNote,
+  VesselNoteCreate,
+  VesselNoteUpdate,
   VesselUpdate,
 } from "../types/vessel";
 
@@ -97,5 +100,37 @@ export const vesselApi = {
     if (!photoPath) return null;
     const filename = photoPath.split("/").pop();
     return `${API_BASE_URL}/images/${filename}`;
+  },
+
+  getVesselNotes: async (imo: string): Promise<VesselNote[]> => {
+    const response = await api.get<VesselNote[]>(`/vessels/${imo}/notes`);
+    return response.data;
+  },
+
+  createVesselNote: async (
+    imo: string,
+    payload: VesselNoteCreate,
+  ): Promise<VesselNote> => {
+    const response = await api.post<VesselNote>(
+      `/vessels/${imo}/notes`,
+      payload,
+    );
+    return response.data;
+  },
+
+  updateVesselNote: async (
+    noteUuid: string,
+    payload: VesselNoteUpdate,
+  ): Promise<VesselNote> => {
+    const response = await api.patch<VesselNote>(
+      `/notes/${noteUuid}`,
+      payload,
+    );
+    return response.data;
+  },
+
+  deleteVesselNote: async (noteUuid: string): Promise<VesselNote> => {
+    const response = await api.delete<VesselNote>(`/notes/${noteUuid}`);
+    return response.data;
   },
 };

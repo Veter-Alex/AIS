@@ -67,3 +67,26 @@ export interface VesselUpdate {
   home_port?: string | null;
   description?: string | null;
 }
+
+export interface VesselNote {
+  note_uuid: string;
+  vessel_id: number;
+  body: string;
+  author: string | null;
+  source_node: string;
+  sync_version: number;
+  created_at: string;
+  updated_at: string;
+  deleted_at: string | null;
+}
+
+export interface VesselNoteCreate {
+  body: string;
+  author?: string | null;
+}
+
+export interface VesselNoteUpdate {
+  body?: string;
+  author?: string | null;
+  deleted?: boolean;
+}
