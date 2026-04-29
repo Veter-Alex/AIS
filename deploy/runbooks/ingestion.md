@@ -11,7 +11,9 @@ Run the ingestion node for continuous online data accumulation from maritime sou
 - `vessel_api`
 - `marinetraffic_scraper`
 - `myshiptracking_scraper`
-- `maritime_database_scraper`
+
+Optional scraper profile:
+- `maritime_database_scraper` (profile: `optional-scrapers`)
 
 Compose profile: `deploy/compose/ingestion.yml`
 

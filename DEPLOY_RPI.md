@@ -7,7 +7,8 @@
 - `vessel_api` (с авто-миграцией Alembic)
 - `marinetraffic_scraper`
 - `myshiptracking_scraper`
-- `maritime_database_scraper`
+
+`maritime_database_scraper` вынесен в optional-профиль и не запускается автоматически.
 
 Скраперы работают в `SCRAPER_MODE=full` и перезапускаются (`restart: unless-stopped`).
 
@@ -65,7 +66,13 @@ curl http://localhost:8000/ready
 
 docker compose -f deploy/compose/ingestion.yml logs -f marinetraffic_scraper
 docker compose -f deploy/compose/ingestion.yml logs -f myshiptracking_scraper
-docker compose -f deploy/compose/ingestion.yml logs -f maritime_database_scraper
+```
+
+Запуск optional-скрапера вручную:
+
+```bash
+docker compose --profile optional-scrapers -f deploy/compose/ingestion.yml up -d maritime_database_scraper
+docker compose --profile optional-scrapers -f deploy/compose/ingestion.yml logs -f maritime_database_scraper
 ```
 
 Проверка роста БД:

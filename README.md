@@ -67,7 +67,9 @@ make up-offline
 docker compose -f deploy/compose/ingestion.yml up -d --build
 ```
 
-Он поднимает `db`, `vessel_api` и 3 скрапера в режиме `full`.
+По умолчанию он поднимает `db`, `vessel_api` и 2 скрапера в режиме `full`
+(`marinetraffic_scraper`, `myshiptracking_scraper`).
+`maritime_database_scraper` вынесен в optional-profile и не стартует автоматически.
 Подробная инструкция (`.env`, мониторинг, `systemd` автозапуск) в
 **[DEPLOY_RPI.md](DEPLOY_RPI.md)**.
 
