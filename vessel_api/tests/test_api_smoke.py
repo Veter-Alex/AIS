@@ -17,14 +17,45 @@ class _FakeCursor:
         self._single = None
 
     def execute(self, query, params=None):
+        if "FROM source_priority" in query:
+            self._rows = [
+                {
+                    "source_name": "marinetraffic.org",
+                    "priority": 1,
+                    "description": "main",
+                    "is_active": True,
+                },
+                {
+                    "source_name": "orphan-source",
+                    "priority": 99,
+                    "description": None,
+                    "is_active": True,
+                },
+            ]
+            return
         if "FROM scraper_state" in query:
             self._rows = [
                 {
-                    "scraper_name": "marinetraffic",
+                    "scraper_name": "marinetraffic.org",
                     "mode": "full",
                     "last_page": 12,
                     "vessels_count": 120,
                     "last_run_at": datetime(2026, 1, 1, 0, 0, 0),
+                },
+                {
+                    "scraper_name": "unknown_scraper",
+                    "mode": "delta",
+                    "last_page": 3,
+                    "vessels_count": 5,
+                    "last_run_at": datetime(2099, 1, 1, 0, 0, 0),
+                },
+            ]
+            return
+        if "GROUP BY info_source" in query:
+            self._rows = [
+                {
+                    "info_source": "marinetraffic.org",
+                    "last_data_at": datetime(2026, 1, 2, 12, 0, 0),
                 }
             ]
             return
@@ -116,8 +147,26 @@ def test_monitor_scrapers(monkeypatch):
     resp = client.get("/monitor/scrapers")
     assert resp.status_code == 200
     payload = resp.json()
-    assert payload["total_scrapers"] == 1
-    assert payload["states"][0]["scraper_name"] == "marinetraffic"
+    assert payload["total_scrapers"] == 2
+    names = {s["scraper_name"] for s in payload["states"]}
+    assert names == {"marinetraffic.org", "unknown_scraper"}
+
+
+def test_stats_ingestion(monkeypatch):
+    monkeypatch.setattr(vessel_app, "get_db_cursor", _fake_db_cursor)
+    client = TestClient(vessel_app.app)
+    resp = client.get("/stats/ingestion")
+    assert resp.status_code == 200
+    payload = resp.json()
+    assert payload["database"]["ok"] is True
+    assert payload["total_vessels"] == 1
+    assert len(payload["sources"]) == 2
+    mt = next(s for s in payload["sources"] if s["source_name"] == "marinetraffic.org")
+    assert len(mt["scrapers"]) == 1
+    assert mt["scrapers"][0]["mode"] == "full"
+    assert mt["scrapers"][0]["last_data_at"] == "2026-01-02T12:00:00"
+    assert len(payload["orphan_scrapers"]) == 1
+    assert payload["orphan_scrapers"][0]["scraper_name"] == "unknown_scraper"
 
 
 def test_metrics_endpoint(monkeypatch):

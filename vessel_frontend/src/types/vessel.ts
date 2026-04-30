@@ -90,3 +90,31 @@ export interface VesselNoteUpdate {
   author?: string | null;
   deleted?: boolean;
 }
+
+/** Элемент состояния скрапера (как в `/stats/ingestion`). */
+export interface ScraperStateItem {
+  scraper_name: string;
+  mode: string;
+  last_page: number;
+  vessels_count: number;
+  last_run_at: string | null;
+  last_data_at: string | null;
+  activity: string;
+}
+
+export interface IngestionSourceBlock {
+  source_name: string;
+  priority: number;
+  description: string | null;
+  is_active: boolean;
+  scrapers: ScraperStateItem[];
+}
+
+export interface IngestionStatsResponse {
+  database: { ok: boolean; detail: string | null };
+  total_vessels: number | null;
+  stale_after_minutes: number;
+  sources: IngestionSourceBlock[];
+  orphan_scrapers: ScraperStateItem[];
+  generated_at: string;
+}

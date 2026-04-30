@@ -291,7 +291,7 @@ def get_scraper_state(mode):
     try:
         cur.execute(
             "SELECT last_page, vessels_count FROM scraper_state WHERE scraper_name = %s AND mode = %s",
-            ("maritime_database", mode),
+            (config.DATA_SOURCE, mode),
         )
         result = cur.fetchone()
         if result:
@@ -329,7 +329,7 @@ def save_scraper_state(mode, last_page, vessels_count):
                 vessels_count = EXCLUDED.vessels_count,
                 last_run_at = EXCLUDED.last_run_at
             """,
-            ("maritime_database", mode, last_page, vessels_count),
+            (config.DATA_SOURCE, mode, last_page, vessels_count),
         )
         conn.commit()
         logging.info(

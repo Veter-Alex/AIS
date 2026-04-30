@@ -35,6 +35,10 @@ VESSELS_PER_PAGE = 30
 # Базовый URL
 BASE_URL = "https://www.maritime-database.com/vessels"
 
+# Имя источника в БД. Должно совпадать с source_priority.source_name
+# для корректной агрегации scraper_state в API мониторинга.
+DATA_SOURCE = "maritime-database.com"
+
 # === Задержки ===
 # Задержка между запросами к страницам (секунды)
 REQUEST_DELAY_MIN = 3

@@ -1,5 +1,6 @@
 import axios from "axios";
 import type {
+  IngestionStatsResponse,
   StatsResponse,
   Vessel,
   VesselFilters,
@@ -66,6 +67,13 @@ export const vesselApi = {
   // Агрегированная статистика для панели фильтров.
   getStats: async (): Promise<StatsResponse> => {
     const response = await api.get<StatsResponse>("/vessels/stats/summary");
+    return response.data;
+  },
+
+  getIngestionStats: async (): Promise<IngestionStatsResponse> => {
+    const response = await api.get<IngestionStatsResponse>(
+      "/stats/ingestion",
+    );
     return response.data;
   },
 

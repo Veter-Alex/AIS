@@ -1,5 +1,6 @@
 import { useQuery } from "@tanstack/react-query";
 import React, { useEffect, useState } from "react";
+import { Link } from "react-router-dom";
 import { vesselApi } from "../api/vesselApi";
 import ExportButton from "../components/ExportButton";
 import FilterPanel from "../components/FilterPanel";
@@ -99,7 +100,13 @@ const VesselListPage: React.FC = () => {
             <h1 className="text-3xl font-bold text-gray-100">
               База данных судов
             </h1>
-            <div className="flex gap-4">
+            <div className="flex gap-4 items-center">
+              <Link
+                to="/stats/ingestion"
+                className="text-sm text-blue-400 hover:text-blue-300"
+              >
+                Мониторинг ingestion
+              </Link>
               <ExportButton filters={filters} />
             </div>
           </div>

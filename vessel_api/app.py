@@ -17,7 +17,7 @@ import json
 import logging
 import os
 import uuid
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from io import BytesIO, StringIO
 from pathlib import Path
 
@@ -25,7 +25,7 @@ from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, StreamingResponse
 from psycopg2.extras import RealDictCursor
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from ais_shared.db import get_db_cursor
 from ais_shared.log_setup import configure_service_logging
@@ -177,6 +177,80 @@ class ScraperMonitorResponse(BaseModel):
     states: list[ScraperStatus]
 
 
+class DatabaseHealth(BaseModel):
+    ok: bool
+    detail: str | None = None
+
+
+class ScraperStateItem(BaseModel):
+    scraper_name: str
+    mode: str
+    last_page: int
+    vessels_count: int
+    last_run_at: str | None = None
+    last_data_at: str | None = None
+    activity: str = Field(
+        description="recent | stale | never — по last_run_at и SCRAPER_STALE_AFTER_MINUTES"
+    )
+
+
+class IngestionSourceBlock(BaseModel):
+    source_name: str
+    priority: int
+    description: str | None = None
+    is_active: bool
+    scrapers: list[ScraperStateItem]
+
+
+class IngestionStatsResponse(BaseModel):
+    database: DatabaseHealth
+    total_vessels: int | None
+    stale_after_minutes: int
+    sources: list[IngestionSourceBlock]
+    orphan_scrapers: list[ScraperStateItem]
+    generated_at: str
+
+
+def _stale_after_delta() -> timedelta:
+    raw = os.getenv("SCRAPER_STALE_AFTER_MINUTES", "120").strip()
+    try:
+        minutes = max(1, int(raw))
+    except ValueError:
+        minutes = 120
+    return timedelta(minutes=minutes)
+
+
+def _scraper_activity(
+    last_run_at: datetime | None, stale_after: timedelta
+) -> str:
+    if last_run_at is None:
+        return "never"
+    now = datetime.now(timezone.utc)
+    ts = last_run_at
+    if ts.tzinfo is None:
+        ts = ts.replace(tzinfo=timezone.utc)
+    if now - ts > stale_after:
+        return "stale"
+    return "recent"
+
+
+def _serialize_scraper_row(
+    row: dict, stale_after: timedelta, last_data_at: datetime | None = None
+) -> dict:
+    lr = row.get("last_run_at")
+    return {
+        "scraper_name": row["scraper_name"],
+        "mode": row["mode"],
+        "last_page": int(row["last_page"]),
+        "vessels_count": int(row["vessels_count"]),
+        "last_run_at": lr.isoformat() if lr else None,
+        "last_data_at": (
+            last_data_at.isoformat() if last_data_at is not None else None
+        ),
+        "activity": _scraper_activity(lr, stale_after),
+    }
+
+
 @app.get("/health")
 def health() -> dict[str, str]:
     """Liveness: процесс отвечает (без проверки БД)."""
@@ -235,6 +309,108 @@ def monitor_scrapers() -> dict:
         }
     except Exception as exc:
         _raise_internal_error(exc, "monitor_scrapers")
+
+
+@app.get("/stats/ingestion", response_model=IngestionStatsResponse)
+def stats_ingestion() -> dict:
+    """Сводка для UI мониторинга: БД, приоритеты источников и состояние скраперов.
+
+    Список источников строится по `source_priority`; строки `scraper_state`
+    сопоставляются по равенству `scraper_name` и `source_name`. Записи
+    состояния без записи в `source_priority` попадают в `orphan_scrapers`.
+    Активность (`activity`) — эвристика по `last_run_at` и порогу
+    SCRAPER_STALE_AFTER_MINUTES (по умолчанию 120).
+    """
+    stale_after = _stale_after_delta()
+    generated = datetime.now(timezone.utc).isoformat()
+    try:
+        with get_db_cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute("SELECT 1")
+            cur.execute("SELECT COUNT(*) AS total FROM vessels")
+            total_vessels = int(cur.fetchone()["total"])
+            cur.execute(
+                """
+                SELECT source_name, priority, description, is_active
+                FROM source_priority
+                ORDER BY priority ASC, source_name ASC
+                """
+            )
+            priority_rows = cur.fetchall()
+            cur.execute(
+                """
+                SELECT scraper_name, mode, last_page, vessels_count, last_run_at
+                FROM scraper_state
+                ORDER BY scraper_name ASC, mode ASC
+                """
+            )
+            state_rows = cur.fetchall()
+            cur.execute(
+                """
+                SELECT info_source, MAX(updated_at) AS last_data_at
+                FROM vessels
+                WHERE info_source IS NOT NULL
+                GROUP BY info_source
+                """
+            )
+            source_last_data_rows = cur.fetchall()
+    except Exception as exc:
+        logger.exception("stats_ingestion database error: %s", exc)
+        return {
+            "database": {"ok": False, "detail": "database unavailable"},
+            "total_vessels": None,
+            "stale_after_minutes": int(stale_after.total_seconds() // 60),
+            "sources": [],
+            "orphan_scrapers": [],
+            "generated_at": generated,
+        }
+
+    by_name: dict[str, list] = {}
+    for row in state_rows:
+        by_name.setdefault(row["scraper_name"], []).append(row)
+    last_data_by_source = {
+        r["info_source"]: r["last_data_at"]
+        for r in source_last_data_rows
+        if r["info_source"]
+    }
+
+    catalog_names = {r["source_name"] for r in priority_rows}
+    orphan: list[dict] = []
+    for name, rows in by_name.items():
+        if name not in catalog_names:
+            for r in rows:
+                orphan.append(
+                    _serialize_scraper_row(
+                        r, stale_after, last_data_by_source.get(name)
+                    )
+                )
+
+    sources_out: list[dict] = []
+    for pr in priority_rows:
+        sn = pr["source_name"]
+        scrapers = [
+            _serialize_scraper_row(
+                r, stale_after, last_data_by_source.get(sn)
+            )
+            for r in by_name.get(sn, [])
+        ]
+        sources_out.append(
+            {
+                "source_name": sn,
+                "priority": int(pr["priority"]),
+                "description": pr["description"],
+                "is_active": bool(pr["is_active"]),
+                "scrapers": scrapers,
+            }
+        )
+
+    return {
+        "database": {"ok": True, "detail": None},
+        "total_vessels": total_vessels,
+        "stale_after_minutes": int(stale_after.total_seconds() // 60),
+        "sources": sources_out,
+        "orphan_scrapers": orphan,
+        "generated_at": generated,
+    }
 
 
 @app.get("/metrics")
