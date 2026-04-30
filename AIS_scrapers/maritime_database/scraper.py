@@ -782,6 +782,25 @@ def parse_vessel_detail_page(html, vessel_data):
                 allow_redirects=True,
             )
             if resp.status_code == 200:
+                # Эндпоинт myshiptracking getimage-normal может отвечать 200,
+                # но возвращать пустой/ошибочный payload. Делаем короткую
+                # валидацию первым чанком тела.
+                if "getimage-normal" in candidate_url:
+                    body_resp = session.get(
+                        candidate_url,
+                        headers=headers,
+                        timeout=8,
+                        stream=True,
+                        allow_redirects=True,
+                    )
+                    try:
+                        chunk = next(body_resp.iter_content(chunk_size=128), b"")
+                    finally:
+                        body_resp.close()
+                    if not chunk:
+                        return False
+                    if chunk.lstrip().startswith(b"<?xml"):
+                        return False
                 return True
             if resp.status_code in (403, 405, 429):
                 resp = session.get(
@@ -815,6 +834,7 @@ def parse_vessel_detail_page(html, vessel_data):
             json_image_url
             and json_image_url.startswith("http")
             and "getimage-normal" in json_image_url
+            and _url_exists(json_image_url)
         ):
             vessel_data["photo_url"] = json_image_url
             photo_found = True
