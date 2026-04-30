@@ -784,18 +784,37 @@ def parse_vessel_detail_page(html, vessel_data):
     photo_found = False
     current_mmsi = mmsi or vessel_data.get("mmsi")
 
+    # Часто актуальный URL изображения лежит в JSON на странице:
+    # "image":"https://www.myshiptracking.com/requests/getimage-normal/<mmsi>.jpg"
+    # Используем его приоритетно, т.к. это самый надёжный источник.
+    image_json_match = re.search(
+        r'"image"\s*:\s*"([^"]+)"',
+        html,
+        re.IGNORECASE,
+    )
+    if image_json_match:
+        json_image_url = image_json_match.group(1).replace("\\/", "/").strip()
+        if (
+            json_image_url
+            and json_image_url.startswith("http")
+            and "getimage-normal" in json_image_url
+        ):
+            vessel_data["photo_url"] = json_image_url
+            photo_found = True
+            logging.info(f"Found photo URL from JSON: {json_image_url}")
+
     html_photo_match = re.search(
         r"(https?://(?:www\.)?maritime-database\.com/upload/vessels_images/[^\s\"'<>]+)",
         html,
         re.IGNORECASE,
     )
-    if not html_photo_match:
+    if not html_photo_match and not photo_found:
         html_photo_match = re.search(
             r"(/upload/vessels_images/[^\s\"'<>]+)",
             html,
             re.IGNORECASE,
         )
-    if html_photo_match:
+    if html_photo_match and not photo_found:
         direct_url = html_photo_match.group(1)
         if direct_url.startswith("/"):
             direct_url = f"https://www.maritime-database.com{direct_url}"
