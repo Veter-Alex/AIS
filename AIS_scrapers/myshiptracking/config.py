@@ -42,6 +42,13 @@ RETRY_BASE_DELAY = (
 # Таймаут запросов
 REQUEST_TIMEOUT = 30
 
+# Параметры именно для скачивания фото.
+# Вынесены отдельно, потому что фото CDN заметно медленнее HTML-страниц.
+PHOTO_REQUEST_TIMEOUT = 45
+PHOTO_MAX_RETRIES = 4
+PHOTO_RETRY_DELAY_MIN = 1.5
+PHOTO_RETRY_DELAY_MAX = 4.5
+
 # User-Agent ротация
 USER_AGENTS = [
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
