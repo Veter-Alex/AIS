@@ -36,7 +36,7 @@ from common.metrics import RuntimeMetrics
 from common.normalize import parse_int
 from common.schema import validate_scraper_schema
 from common.upsert import source_priority_sql
-from PIL import Image
+from PIL import Image, UnidentifiedImageError
 
 configure_scraper_logging("maritime_database")
 
@@ -239,7 +239,7 @@ def download_image(photo_url, vessel_key):
     image_dir = os.getenv("IMAGE_DIR", "/app/images")
     os.makedirs(image_dir, exist_ok=True)
 
-    file_name = f"{vessel_key}.jpg"  # Все фото сохраняем как JPEG для сжатия
+    file_name = f"{vessel_key}.jpg"  # По умолчанию сохраняем как JPEG.
     dest = os.path.join(image_dir, file_name)
 
     try:
@@ -248,24 +248,41 @@ def download_image(photo_url, vessel_key):
             photo_url, headers=headers, timeout=config.REQUEST_TIMEOUT
         )
         if r.status_code == 200:
-            # Открыть изображение в памяти
-            img = Image.open(io.BytesIO(r.content))
+            try:
+                # Открыть изображение в памяти
+                img = Image.open(io.BytesIO(r.content))
 
-            # Конвертировать в RGB (для JPEG)
-            if img.mode in ("RGBA", "LA", "P"):
-                rgb_img = Image.new("RGB", img.size, (255, 255, 255))
-                rgb_img.paste(
-                    img, mask=img.split()[-1] if img.mode == "RGBA" else None
+                # Конвертировать в RGB (для JPEG)
+                if img.mode in ("RGBA", "LA", "P"):
+                    rgb_img = Image.new("RGB", img.size, (255, 255, 255))
+                    rgb_img.paste(
+                        img,
+                        mask=img.split()[-1] if img.mode == "RGBA" else None,
+                    )
+                    img = rgb_img
+
+                # Сжать размер (макс 320x240)
+                img.thumbnail((320, 240), Image.Resampling.LANCZOS)
+
+                # Сохранить с качеством 65% (экономия ~70% размера)
+                img.save(dest, "JPEG", quality=65, optimize=True)
+                logging.info(f"Photo saved: {dest}")
+                return dest
+            except UnidentifiedImageError:
+                raw = r.content
+                # Некоторые источники отдают WEBP при заголовке image/jpeg.
+                if raw.startswith(b"RIFF") and raw[8:12] == b"WEBP":
+                    webp_dest = os.path.join(image_dir, f"{vessel_key}.webp")
+                    with open(webp_dest, "wb") as f:
+                        f.write(raw)
+                    logging.info(f"Photo saved as WEBP: {webp_dest}")
+                    return webp_dest
+                logging.warning(
+                    "Unsupported image format for %s (content-type=%s)",
+                    photo_url,
+                    r.headers.get("content-type"),
                 )
-                img = rgb_img
-
-            # Сжать размер (макс 320x240)
-            img.thumbnail((320, 240), Image.Resampling.LANCZOS)
-
-            # Сохранить с качеством 65% (экономия ~70% размера)
-            img.save(dest, "JPEG", quality=65, optimize=True)
-            logging.info(f"Photo saved: {dest}")
-            return dest
+                return None
         else:
             logging.warning(
                 f"Photo not downloaded, status={r.status_code} for {photo_url}"
