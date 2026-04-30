@@ -44,13 +44,15 @@ REQUEST_DELAY_MAX = 7
 DETAIL_DELAY_MIN = 1
 DETAIL_DELAY_MAX = 3
 
-# Задержка перед повторной попыткой после ошибки (базовое значение для экспоненциального роста)
-RETRY_BASE_DELAY = 5
+# Пауза между повторными HTTP-попытками.
+# Держим мягче, чтобы не "долбить" сайт при временных блокировках.
+RETRY_DELAY_MIN = 12.0
+RETRY_DELAY_MAX = 30.0
 
 # Дополнительная задержка каждые N страниц (эмуляция "отдыха")
-BREAK_AFTER_PAGES = 50
-BREAK_DURATION_MIN = 30
-BREAK_DURATION_MAX = 60
+BREAK_AFTER_PAGES = 10
+BREAK_DURATION_MIN = 90
+BREAK_DURATION_MAX = 180
 
 # === Timeouts ===
 # Таймаут HTTP запросов (секунды)
@@ -64,6 +66,20 @@ USER_AGENTS = [
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.3 Safari/605.1.15",
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:124.0) Gecko/20100101 Firefox/124.0",
 ]
+
+# Сколько запросов использовать один и тот же User-Agent
+# перед очередной ротацией.
+UA_ROTATE_EVERY_REQUESTS = 20
+
+# Базовый cooldown при серии сетевых сбоев загрузки списка.
+FAILURE_STREAK_LIMIT = 3
+FAILURE_COOLDOWN_SECONDS = 900
+
+# Circuit breaker для серийных сетевых сбоев:
+# при N подряд timeout/403/429/connection уходим в длинный cooldown.
+CIRCUIT_BREAKER_STREAK_LIMIT = 3
+CIRCUIT_BREAKER_COOLDOWN_MIN_SECONDS = 1800
+CIRCUIT_BREAKER_COOLDOWN_MAX_SECONDS = 7200
 
 # === База данных ===
 # Настройки подключения (переопределяются через ENV переменные)

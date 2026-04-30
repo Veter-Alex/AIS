@@ -98,27 +98,33 @@ services:
       - ./logs:/app/logs
 
   # Скрапер Maritime Database, пишет данные и фото
-  # maritime_scraper:
-  #   build: ./AIS_scrapers/maritime_database
-  #   depends_on:
-  #     db:
-  #       condition: service_healthy  # Запускать только когда БД перешла в состояние Healthy
-  #   env_file: .env
-  #   environment:
-  #     # Подключение к БД
-  #     POSTGRES_DB: ${POSTGRES_DB}
-  #     POSTGRES_USER: ${POSTGRES_USER}
-  #     POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
-  #     POSTGRES_HOST: ${POSTGRES_HOST}
-  #     POSTGRES_PORT: ${POSTGRES_PORT}
-  #     # Режим работы скрапера: test|full
-  #     SCRAPER_MODE: "full"
-  #   volumes:
-  #     - type: bind
-  #       source: ./data/vessel_images   # Папка изображений на хосте
-  #       target: /app/images            # Точка монтирования внутри контейнера
-  #       bind:
-  #         create_host_path: true       # Создать папку на хосте, если её нет
+  maritime_scraper:
+    build:
+      context: ./AIS_scrapers
+      dockerfile: maritime_database/Dockerfile
+    profiles:
+      - scrapers
+    restart: on-failure
+    depends_on:
+      db:
+        condition: service_healthy
+    env_file: .env
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_HOST: ${POSTGRES_HOST}
+      POSTGRES_PORT: ${POSTGRES_PORT}
+      SCRAPER_MODE: "full"
+      AIS_LOG_DIR: /app/logs
+      LOG_LEVEL: INFO
+    volumes:
+      - type: bind
+        source: ./data/vessel_images
+        target: /app/images
+        bind:
+          create_host_path: true
+      - ./logs:/app/logs
 
   # Скрапер MyShipTracking, пишет данные о судах
   myshiptracking_scraper:

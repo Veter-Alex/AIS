@@ -43,6 +43,29 @@ configure_scraper_logging("maritime_database")
 # Глобальная сессия для переиспользования соединений
 session = requests.Session()
 PLACEHOLDER_VALUES = {"", "-", "n/a", "na", "none", "unknown", "not available"}
+_ua_lock = threading.Lock()
+_ua_current: str | None = None
+_ua_remaining_requests = 0
+
+
+def get_sticky_user_agent() -> str:
+    """Возвращает "липкий" User-Agent на серию запросов."""
+    global _ua_current, _ua_remaining_requests
+    rotate_every = max(
+        1,
+        int(
+            os.getenv(
+                "UA_ROTATE_EVERY_REQUESTS",
+                str(config.UA_ROTATE_EVERY_REQUESTS),
+            )
+        ),
+    )
+    with _ua_lock:
+        if _ua_current is None or _ua_remaining_requests <= 0:
+            _ua_current = random.choice(config.USER_AGENTS)
+            _ua_remaining_requests = rotate_every
+        _ua_remaining_requests -= 1
+        return _ua_current
 
 
 def normalize_mmsi(raw):
@@ -102,14 +125,25 @@ def choose_worker_count(
     last_page_error_ratio: float, recent_retry_count: int
 ) -> int:
     if last_page_error_ratio > 0.65 or recent_retry_count >= 20:
-        return 2
-    if last_page_error_ratio > 0.4 or recent_retry_count >= 12:
-        return 3
-    if last_page_error_ratio < 0.15 and recent_retry_count <= 3:
-        return 6
-    if last_page_error_ratio < 0.25 and recent_retry_count <= 6:
-        return 5
-    return 4
+        workers = 1
+    elif last_page_error_ratio > 0.4 or recent_retry_count >= 12:
+        workers = 2
+    elif last_page_error_ratio < 0.2 and recent_retry_count <= 2:
+        workers = 3
+    else:
+        workers = 2
+    # Верхний предел потоков можно принудительно зажать через ENV для "мягкого" режима.
+    max_workers_env = os.getenv("SOFT_MAX_WORKERS")
+    if max_workers_env:
+        try:
+            hard_cap = max(1, int(max_workers_env))
+            workers = min(workers, hard_cap)
+        except ValueError:
+            logging.warning(
+                "SOFT_MAX_WORKERS=%r не распознан, используем авто-режим",
+                max_workers_env,
+            )
+    return workers
 
 
 def validate_vessel_payload(vessel_data, metrics):
@@ -422,14 +456,39 @@ def fetch_page(url, metrics=None):
     page = fetch_page_with_retry(
         session=session,
         url=url,
-        user_agents=config.USER_AGENTS,
+        user_agents=[get_sticky_user_agent()],
         timeout=config.REQUEST_TIMEOUT,
         max_retries=config.MAX_RETRIES,
-        retry_base_delay=config.RETRY_BASE_DELAY,
+        retry_delay_range=(config.RETRY_DELAY_MIN, config.RETRY_DELAY_MAX),
+        on_retry=_on_retry,
     )
     if page is None and metrics is not None:
         metrics.http_failures += 1
     return page
+
+
+def fetch_page_with_meta(url, metrics=None):
+    """Загрузить HTML страницы и вернуть тип последней сетевой ошибки."""
+    error_kinds: list[str] = []
+
+    def _on_retry(_url, _attempt, _max_attempts, kind):
+        if metrics is not None:
+            metrics.retry_count += 1
+        error_kinds.append(kind)
+
+    page = fetch_page_with_retry(
+        session=session,
+        url=url,
+        user_agents=[get_sticky_user_agent()],
+        timeout=config.REQUEST_TIMEOUT,
+        max_retries=config.MAX_RETRIES,
+        retry_delay_range=(config.RETRY_DELAY_MIN, config.RETRY_DELAY_MAX),
+        on_retry=_on_retry,
+    )
+    if page is None and metrics is not None:
+        metrics.http_failures += 1
+    failure_kind = error_kinds[-1] if error_kinds else None
+    return page, failure_kind
 
 
 def parse_vessel_list_page(html):
@@ -437,16 +496,86 @@ def parse_vessel_list_page(html):
 
     Возвращает список словарей с полями:
     - url, name, general_type, year_built, gt, dwt, dimensions.
+
+    Сайт перешёл на Next.js: таблица ``table.vessels-table``, строки ``tr.vessel-row``,
+    ссылка на карточку в ``a.vessel-info-link`` (путь ``/vessel/vesselid:...``).
+    Сохраняем разбор старого HTML (одна строка — ссылка в первой ячейке) для тестов.
     """
     soup = BeautifulSoup(html, "html.parser")
     vessels = []
 
-    # Найти все строки судов в таблице
-    rows = soup.find_all("tr")
+    def _append_row(
+        vessel_url, vessel_name, vessel_type, year_built, gt, dwt, dimensions
+    ):
+        vessel_type = sanitize_general_type(vessel_name, vessel_type)
+        vessels.append(
+            {
+                "url": vessel_url,
+                "name": vessel_name,
+                "general_type": vessel_type,
+                "year_built": sanitize_numeric(
+                    year_built,
+                    min_value=1800,
+                    max_value=datetime.now().year + 1,
+                ),
+                "gt": sanitize_numeric(gt, min_value=50, max_value=600000),
+                "dwt": sanitize_numeric(dwt, min_value=100, max_value=700000),
+                "dimensions": dimensions,
+            }
+        )
 
-    for row in rows:
+    def _is_vessels_table_attr(classes):
+        if not classes:
+            return False
+        parts = classes.split() if isinstance(classes, str) else list(classes)
+        return "vessels-table" in parts
+
+    table = soup.find("table", class_=_is_vessels_table_attr)
+    if table:
+        for row in table.find_all("tr", class_="vessel-row"):
+            info_a = row.select_one("a.vessel-info-link")
+            if not info_a or not info_a.get("href"):
+                continue
+            href = info_a["href"]
+            if href.startswith("http"):
+                vessel_url = href
+            else:
+                vessel_url = "https://www.maritime-database.com" + href
+            name_el = row.select_one("h5.vessel-name") or info_a.find("h5")
+            type_el = row.select_one("p.vessel-type") or info_a.find("p")
+            vessel_name = normalize_vessel_name(
+                name_el.get_text(strip=True) if name_el else None
+            )
+            if not vessel_name:
+                continue
+            vessel_type = normalize_label_text(
+                type_el.get_text(strip=True) if type_el else None
+            )
+            cells = row.find_all("td", recursive=False)
+            year_built = (
+                cells[2].get_text(strip=True) if len(cells) > 2 else None
+            )
+            gt = cells[3].get_text(strip=True) if len(cells) > 3 else None
+            dwt = cells[4].get_text(strip=True) if len(cells) > 4 else None
+            dimensions = (
+                cells[5].get_text(strip=True) if len(cells) > 5 else None
+            )
+            _append_row(
+                vessel_url,
+                vessel_name,
+                vessel_type,
+                year_built,
+                gt,
+                dwt,
+                dimensions,
+            )
+        if vessels:
+            return vessels
+
+    # Старый формат (и unit-тесты): первая ячейка — ссылка с именем, далее колонки.
+    for row in soup.find_all("tr"):
         cells = row.find_all("td")
-        if len(cells) >= 6:  # Строка с данными судна
+        if len(cells) >= 6:
             link_cell = cells[0].find("a")
             if link_cell and link_cell.get("href"):
                 vessel_url = (
@@ -455,38 +584,28 @@ def parse_vessel_list_page(html):
                 vessel_name = normalize_vessel_name(link_cell.text.strip())
                 if not vessel_name:
                     continue
-
-                # Базовая информация из таблицы списка
                 vessel_type = (
                     normalize_label_text(cells[1].text.strip())
                     if len(cells) > 1
                     else None
                 )
-                # Очистка: некоторые строки содержат склейку имени и типа
                 vessel_type = sanitize_general_type(vessel_name, vessel_type)
-                year_built = cells[2].text.strip() if len(cells) > 2 else None
+                year_built = (
+                    cells[2].text.strip() if len(cells) > 2 else None
+                )
                 gt = cells[3].text.strip() if len(cells) > 3 else None
                 dwt = cells[4].text.strip() if len(cells) > 4 else None
-                dimensions = cells[5].text.strip() if len(cells) > 5 else None
-
-                vessels.append(
-                    {
-                        "url": vessel_url,
-                        "name": vessel_name,
-                        "general_type": vessel_type,
-                        "year_built": sanitize_numeric(
-                            year_built,
-                            min_value=1800,
-                            max_value=datetime.now().year + 1,
-                        ),
-                        "gt": sanitize_numeric(
-                            gt, min_value=50, max_value=600000
-                        ),
-                        "dwt": sanitize_numeric(
-                            dwt, min_value=100, max_value=700000
-                        ),
-                        "dimensions": dimensions,
-                    }
+                dimensions = (
+                    cells[5].text.strip() if len(cells) > 5 else None
+                )
+                _append_row(
+                    vessel_url,
+                    vessel_name,
+                    vessel_type,
+                    year_built,
+                    gt,
+                    dwt,
+                    dimensions,
                 )
 
     return vessels
@@ -699,9 +818,13 @@ def process_vessel(vessel_data, metrics, detail_cache, cache_lock):
     """
     try:
         # Небольшая случайная задержка для предотвращения одновременных запросов от всех потоков
-        time.sleep(
-            random.uniform(config.DETAIL_DELAY_MIN, config.DETAIL_DELAY_MAX)
+        detail_delay_multiplier = float(
+            os.getenv("DETAIL_DELAY_MULTIPLIER", "1.0")
         )
+        detail_delay = random.uniform(
+            config.DETAIL_DELAY_MIN, config.DETAIL_DELAY_MAX
+        )
+        time.sleep(max(0.0, detail_delay * detail_delay_multiplier))
 
         with cache_lock:
             detail_html = detail_cache.get(vessel_data["url"])
@@ -779,6 +902,41 @@ def main():
     last_page_error_ratio = 0.0
     retry_count_before_page = metrics.retry_count
     checkpoint_every_saved = 10
+    detail_delay_multiplier = float(
+        os.getenv("DETAIL_DELAY_MULTIPLIER", "1.0")
+    )
+    break_duration_multiplier = float(
+        os.getenv("BREAK_DURATION_MULTIPLIER", "1.0")
+    )
+    failure_streak_limit = int(
+        os.getenv("FAILURE_STREAK_LIMIT", str(config.FAILURE_STREAK_LIMIT))
+    )
+    failure_cooldown_seconds = int(
+        os.getenv(
+            "FAILURE_COOLDOWN_SECONDS", str(config.FAILURE_COOLDOWN_SECONDS)
+        )
+    )
+    circuit_streak_limit = int(
+        os.getenv(
+            "CIRCUIT_BREAKER_STREAK_LIMIT",
+            str(config.CIRCUIT_BREAKER_STREAK_LIMIT),
+        )
+    )
+    circuit_cooldown_min_seconds = int(
+        os.getenv(
+            "CIRCUIT_BREAKER_COOLDOWN_MIN_SECONDS",
+            str(config.CIRCUIT_BREAKER_COOLDOWN_MIN_SECONDS),
+        )
+    )
+    circuit_cooldown_max_seconds = int(
+        os.getenv(
+            "CIRCUIT_BREAKER_COOLDOWN_MAX_SECONDS",
+            str(config.CIRCUIT_BREAKER_COOLDOWN_MAX_SECONDS),
+        )
+    )
+    circuit_error_kinds = {"timeout", "http_403", "http_429", "connection"}
+    consecutive_fetch_failures = 0
+    consecutive_circuit_failures = 0
 
     try:
         while True:
@@ -801,11 +959,57 @@ def main():
             logging.info(f"Fetching page {current_page}: {url}")
 
             # Загрузить и распарсить страницу списка
-            html = fetch_page(url, metrics=metrics)
+            html, failure_kind = fetch_page_with_meta(url, metrics=metrics)
             if not html:
-                logging.error(f"Failed to fetch page {current_page}")
+                consecutive_fetch_failures += 1
                 metrics.pages_failed += 1
-                break
+                if failure_kind in circuit_error_kinds:
+                    consecutive_circuit_failures += 1
+                else:
+                    consecutive_circuit_failures = 0
+                logging.warning(
+                    "Failed to fetch list page=%s kind=%s (streak=%s/%s, circuit=%s/%s)",
+                    current_page,
+                    failure_kind,
+                    consecutive_fetch_failures,
+                    failure_streak_limit,
+                    consecutive_circuit_failures,
+                    circuit_streak_limit,
+                )
+                if (
+                    consecutive_circuit_failures >= circuit_streak_limit
+                    and circuit_cooldown_max_seconds > 0
+                ):
+                    cooldown = random.randint(
+                        max(1, circuit_cooldown_min_seconds),
+                        max(
+                            max(1, circuit_cooldown_min_seconds),
+                            circuit_cooldown_max_seconds,
+                        ),
+                    )
+                    logging.warning(
+                        "Circuit breaker: series=%s (%s) => cooldown %s sec",
+                        consecutive_circuit_failures,
+                        failure_kind,
+                        cooldown,
+                    )
+                    save_scraper_state(mode, current_page, vessels_processed)
+                    time.sleep(cooldown)
+                    consecutive_circuit_failures = 0
+                    consecutive_fetch_failures = 0
+                    continue
+                if consecutive_fetch_failures >= failure_streak_limit:
+                    logging.warning(
+                        "Activate cooldown %s sec due to fetch failures",
+                        failure_cooldown_seconds,
+                    )
+                    save_scraper_state(mode, current_page, vessels_processed)
+                    time.sleep(max(0, failure_cooldown_seconds))
+                    consecutive_fetch_failures = 0
+                    consecutive_circuit_failures = 0
+                continue
+            consecutive_fetch_failures = 0
+            consecutive_circuit_failures = 0
 
             vessels = parse_vessel_list_page(html)
             metrics.pages_ok += 1
@@ -835,8 +1039,14 @@ def main():
             page_saved = 0
             with ThreadPoolExecutor(max_workers=workers) as executor:
                 futures = []
+                submit_budget = (
+                    max_vessels - vessels_processed
+                    if max_vessels
+                    else len(vessels)
+                )
+                submit_budget = max(0, submit_budget)
                 for vessel_data in vessels:
-                    if max_vessels and vessels_processed >= max_vessels:
+                    if len(futures) >= submit_budget:
                         break
                     futures.append(
                         executor.submit(
@@ -898,6 +1108,9 @@ def main():
                 break_time = random.uniform(
                     config.BREAK_DURATION_MIN, config.BREAK_DURATION_MAX
                 )
+                break_time = max(
+                    0.0, break_time * break_duration_multiplier
+                )
                 logging.info(
                     f"Taking a break for {break_time:.0f} seconds after {config.BREAK_AFTER_PAGES} pages..."
                 )
@@ -907,6 +1120,7 @@ def main():
             delay = random.uniform(
                 config.REQUEST_DELAY_MIN, config.REQUEST_DELAY_MAX
             )
+            delay = max(0.0, delay * detail_delay_multiplier)
             time.sleep(delay)
 
     except KeyboardInterrupt:
