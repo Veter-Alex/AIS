@@ -59,6 +59,8 @@ def fetch_page_with_retry(
                 status_code is not None and 500 <= status_code < 600
             )
             if not retryable_http or attempt >= max_retries:
+                if on_retry is not None:
+                    on_retry(url, attempt + 1, max_retries + 1, error_kind)
                 logger.error(
                     "HTTP request окончательно отклонен url=%s status=%s attempt=%s/%s err=%s",
                     url,

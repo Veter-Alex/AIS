@@ -45,6 +45,33 @@ configure_scraper_logging("vesselfinder")
 
 session = requests.Session()
 PLACEHOLDER_VALUES = {"", "-", "n/a", "na", "none", "unknown", "not available"}
+_ua_lock = threading.Lock()
+_ua_current: str | None = None
+_ua_remaining_requests = 0
+
+
+def get_sticky_user_agent() -> str:
+    """Возвращает "липкий" User-Agent на серию запросов.
+
+    Идея: не менять UA на каждом запросе, чтобы трафик выглядел стабильнее,
+    но периодически ротировать его через заданное число запросов.
+    """
+    global _ua_current, _ua_remaining_requests
+    rotate_every = max(
+        1,
+        int(
+            os.getenv(
+                "UA_ROTATE_EVERY_REQUESTS",
+                str(config.UA_ROTATE_EVERY_REQUESTS),
+            )
+        ),
+    )
+    with _ua_lock:
+        if _ua_current is None or _ua_remaining_requests <= 0:
+            _ua_current = random.choice(config.USER_AGENTS)
+            _ua_remaining_requests = rotate_every
+        _ua_remaining_requests -= 1
+        return _ua_current
 
 
 def normalize_mmsi(raw):
@@ -401,7 +428,7 @@ def fetch_page(url, metrics=None):
     page_html = fetch_page_with_retry(
         session=session,
         url=url,
-        user_agents=config.USER_AGENTS,
+        user_agents=[get_sticky_user_agent()],
         timeout=30,
         max_retries=config.MAX_RETRIES,
         retry_delay_range=(config.RETRY_DELAY_MIN, config.RETRY_DELAY_MAX),
@@ -411,6 +438,31 @@ def fetch_page(url, metrics=None):
     if page_html is None and metrics is not None:
         metrics.http_failures += 1
     return page_html
+
+
+def fetch_page_with_meta(url, metrics=None):
+    """Загрузить HTML страницы и вернуть тип последней сетевой ошибки."""
+    error_kinds: list[str] = []
+
+    def _on_retry(_url, _attempt, _max_attempts, kind):
+        if metrics is not None:
+            metrics.retry_count += 1
+        error_kinds.append(kind)
+
+    page_html = fetch_page_with_retry(
+        session=session,
+        url=url,
+        user_agents=[get_sticky_user_agent()],
+        timeout=30,
+        max_retries=config.MAX_RETRIES,
+        retry_delay_range=(config.RETRY_DELAY_MIN, config.RETRY_DELAY_MAX),
+        return_404_marker=True,
+        on_retry=_on_retry,
+    )
+    if page_html is None and metrics is not None:
+        metrics.http_failures += 1
+    failure_kind = error_kinds[-1] if error_kinds else None
+    return page_html, failure_kind
 
 
 def get_vessel_links(page=1, vessel_type=None):
@@ -432,18 +484,20 @@ def get_vessel_links(page=1, vessel_type=None):
             url = f"https://www.vesselfinder.com/vessels?page={page}&type={vessel_type}"
     else:
         url = f"https://www.vesselfinder.com/vessels?page={page}"
-    html = fetch_page(url, metrics=getattr(config, "_runtime_metrics", None))
+    html, failure_kind = fetch_page_with_meta(
+        url, metrics=getattr(config, "_runtime_metrics", None)
+    )
     if not html:
-        return [], True
+        return [], True, failure_kind
     if html == "404_NOT_FOUND":
-        return [], False
+        return [], False, failure_kind
     soup = BeautifulSoup(html, "html.parser")
     links = []
     for a in soup.select("table a[href^='/vessels/details/']"):
         href = a.get("href")
         if href:
             links.append("https://www.vesselfinder.com" + href)
-    return links, False
+    return links, False, failure_kind
 
 
 def parse_vessel(url):
@@ -663,7 +717,27 @@ def main():
     failure_cooldown_seconds = int(
         os.getenv("FAILURE_COOLDOWN_SECONDS", "900")
     )
+    circuit_streak_limit = int(
+        os.getenv(
+            "CIRCUIT_BREAKER_STREAK_LIMIT",
+            str(config.CIRCUIT_BREAKER_STREAK_LIMIT),
+        )
+    )
+    circuit_cooldown_min_seconds = int(
+        os.getenv(
+            "CIRCUIT_BREAKER_COOLDOWN_MIN_SECONDS",
+            str(config.CIRCUIT_BREAKER_COOLDOWN_MIN_SECONDS),
+        )
+    )
+    circuit_cooldown_max_seconds = int(
+        os.getenv(
+            "CIRCUIT_BREAKER_COOLDOWN_MAX_SECONDS",
+            str(config.CIRCUIT_BREAKER_COOLDOWN_MAX_SECONDS),
+        )
+    )
+    circuit_error_kinds = {"timeout", "http_403", "http_429", "connection"}
     consecutive_fetch_failures = 0
+    consecutive_circuit_failures = 0
     vessel_type = (
         int(os.getenv("VESSEL_TYPE", config.VESSEL_TYPE))
         if os.getenv("VESSEL_TYPE") or config.VESSEL_TYPE
@@ -682,17 +756,48 @@ def main():
                 break
 
             logging.info(f"Парсинг страницы {page}")
-            links, fetch_failed = get_vessel_links(page, vessel_type)
+            links, fetch_failed, failure_kind = get_vessel_links(
+                page, vessel_type
+            )
 
             if not links:
                 if fetch_failed:
                     consecutive_fetch_failures += 1
+                    if failure_kind in circuit_error_kinds:
+                        consecutive_circuit_failures += 1
+                    else:
+                        consecutive_circuit_failures = 0
                     logging.warning(
-                        "Не удалось загрузить список судов page=%s (streak=%s/%s)",
+                        "Не удалось загрузить список судов page=%s kind=%s (streak=%s/%s, circuit=%s/%s)",
                         page,
+                        failure_kind,
                         consecutive_fetch_failures,
                         failure_streak_limit,
+                        consecutive_circuit_failures,
+                        circuit_streak_limit,
                     )
+                    if (
+                        consecutive_circuit_failures >= circuit_streak_limit
+                        and circuit_cooldown_max_seconds > 0
+                    ):
+                        cooldown = random.randint(
+                            max(1, circuit_cooldown_min_seconds),
+                            max(
+                                max(1, circuit_cooldown_min_seconds),
+                                circuit_cooldown_max_seconds,
+                            ),
+                        )
+                        logging.warning(
+                            "Circuit breaker: серия %s (%s) => пауза %s сек",
+                            consecutive_circuit_failures,
+                            failure_kind,
+                            cooldown,
+                        )
+                        save_scraper_state(mode, page, count)
+                        time.sleep(cooldown)
+                        consecutive_circuit_failures = 0
+                        consecutive_fetch_failures = 0
+                        continue
                     if consecutive_fetch_failures >= failure_streak_limit:
                         logging.warning(
                             "Активируем cooldown на %s сек из-за серии сетевых сбоев",
@@ -701,11 +806,13 @@ def main():
                         save_scraper_state(mode, page, count)
                         time.sleep(max(0, failure_cooldown_seconds))
                         consecutive_fetch_failures = 0
+                        consecutive_circuit_failures = 0
                     continue
                 logging.info("Нет больше судов для парсинга")
                 save_scraper_state(mode, page, count)
                 break
             consecutive_fetch_failures = 0
+            consecutive_circuit_failures = 0
             metrics.pages_ok += 1
             log_event(
                 logging.getLogger(__name__),

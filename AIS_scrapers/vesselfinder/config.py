@@ -57,6 +57,16 @@ USER_AGENTS = [
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:124.0) Gecko/20100101 Firefox/124.0",
 ]
 
+# Сколько запросов использовать один и тот же User-Agent
+# перед очередной ротацией.
+UA_ROTATE_EVERY_REQUESTS = 20
+
+# Circuit breaker для серийных сетевых сбоев:
+# при N подряд timeout/403/429/connection уходим в длинный cooldown.
+CIRCUIT_BREAKER_STREAK_LIMIT = 3
+CIRCUIT_BREAKER_COOLDOWN_MIN_SECONDS = 1800
+CIRCUIT_BREAKER_COOLDOWN_MAX_SECONDS = 7200
+
 # === База данных ===
 # Настройки подключения (переопределяются через ENV переменные)
 DB_NAME = "vessels_db"
