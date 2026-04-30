@@ -21,13 +21,15 @@ services:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
       interval: 5s    # Частота проверки
       timeout: 5s     # Таймаут выполнения команды проверки
-      retries: 5      # Количество попыток до признания контейнера нездоровым
+      retries: 10     # Первый init кластера на пустом volume может занять дольше
+      start_period: 30s
 
   # Backend API для работы с данными судов (читает из БД и отдаёт фронтенду)
   vessel_api:
     build:
       context: .
       dockerfile: vessel_api/Dockerfile
+    restart: unless-stopped
     depends_on:
       db:
         condition: service_healthy
@@ -58,26 +60,42 @@ services:
       retries: 5
       start_period: 15s
 
-  # Скрапер VesselFinder (Selenium + Chromium), пишет данные и фото
-  # vesselfinder_scraper:
-  #   build: ./AIS_scrapers/vesselfinder
-  #   depends_on:
-  #     db:
-  #       condition: service_healthy  # Запускать только когда БД перешла в состояние Healthy
-  #   env_file: .env
-  #   environment:
-  #     # Подключение к БД
-  #     POSTGRES_DB: ${POSTGRES_DB}
-  #     POSTGRES_USER: ${POSTGRES_USER}
-  #     POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
-  #     POSTGRES_HOST: ${POSTGRES_HOST}
-  #     POSTGRES_PORT: ${POSTGRES_PORT}
-  #     # Директория для сохранения изображений внутри контейнера
-  #     IMAGE_DIR: ${IMAGE_DIR}
-  #     # Режим работы скрапера: test|full
-  #     SCRAPER_MODE: "full"
-  #   volumes:
-  #     - ./data/vessel_images:/app/images  # Общая папка изображений, доступна для записи
+  # VesselFinder (HTTP + BeautifulSoup). Профиль demo — один скрапер для локального просмотра стека.
+  vesselfinder_scraper:
+    build:
+      context: ./AIS_scrapers
+      dockerfile: vesselfinder/Dockerfile
+    profiles:
+      - demo
+    # После успешного завершения процесс выходит с 0 — не перезапускать бесконечно (в test лимит страниц).
+    restart: on-failure
+    depends_on:
+      db:
+        condition: service_healthy
+      vessel_api:
+        condition: service_healthy
+    env_file: .env
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_HOST: ${POSTGRES_HOST}
+      POSTGRES_PORT: ${POSTGRES_PORT}
+      HTTP_PROXY: ${HTTP_PROXY}
+      HTTPS_PROXY: ${HTTPS_PROXY}
+      NO_PROXY: ${NO_PROXY}
+      SCRAPER_MODE: "full"
+      # "Мягкий" режим, чтобы снизить риск блокировки IP:
+      SOFT_MAX_WORKERS: "1"
+      DETAIL_DELAY_MULTIPLIER: "3.0"
+      BREAK_DURATION_MULTIPLIER: "2.0"
+      FAILURE_STREAK_LIMIT: "3"
+      FAILURE_COOLDOWN_SECONDS: "900"
+      AIS_LOG_DIR: /app/logs
+      LOG_LEVEL: INFO
+    volumes:
+      - ./data/vessel_images:/app/images
+      - ./logs:/app/logs
 
   # Скрапер Maritime Database, пишет данные и фото
   # maritime_scraper:

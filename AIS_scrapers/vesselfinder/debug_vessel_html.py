@@ -2,27 +2,27 @@
 Диагностический утилитарный скрипт для отладки HTML страницы судна на VesselFinder.
 
 Назначение:
-- быстро получить "сырой" HTML после рендера Selenium;
+- быстро получить сырой HTML через HTTP (как основной скрапер);
 - вывести ключевые фрагменты (таблицы, изображения, метрики IMO/MMSI);
 - сохранить страницу в файл для ручного анализа селекторов.
 """
 
 import logging
 import os
-import random
 import sys
-import time
 from pathlib import Path
 
+import requests
 from bs4 import BeautifulSoup
-from selenium import webdriver
-from selenium.webdriver.chrome.options import Options
-from selenium.webdriver.chrome.service import Service
 
 _SCRAPERS_ROOT = Path(__file__).resolve().parent.parent
-if str(_SCRAPERS_ROOT) not in sys.path:
-    sys.path.insert(0, str(_SCRAPERS_ROOT))
+_SCRAPER_DIR = Path(__file__).resolve().parent
+for p in (_SCRAPERS_ROOT, _SCRAPER_DIR):
+    if str(p) not in sys.path:
+        sys.path.insert(0, str(p))
+from common.http import fetch_page_with_retry  # noqa: E402
 from common.logging_setup import configure_scraper_logging  # noqa: E402
+import config  # noqa: E402
 
 configure_scraper_logging("vesselfinder_debug")
 
@@ -31,44 +31,23 @@ URL = os.getenv(
 )
 USER_AGENT_ENV = os.getenv("DEBUG_USER_AGENT")
 
-USER_AGENTS = [
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.3 Safari/605.1.15",
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:124.0) Gecko/20100101 Firefox/124.0",
-]
-
-
-def choose_user_agent() -> str:
-    # Позволяем явно задать UA через ENV для воспроизводимого дебага.
-    if USER_AGENT_ENV:
-        return USER_AGENT_ENV
-    return random.choice(USER_AGENTS)
-
 
 def fetch_html(url: str) -> str:
-    # Минимальная headless-конфигурация Chrome для стабильного получения page_source.
-    opts = Options()
-    opts.add_argument("--headless")
-    opts.add_argument("--no-sandbox")
-    opts.add_argument("--disable-dev-shm-usage")
-    opts.add_argument("--disable-gpu")
-    opts.add_argument("--window-size=1920,1080")
-    ua = choose_user_agent()
-    opts.add_argument(f"--user-agent={ua}")
-    opts.binary_location = os.getenv("CHROME_BIN", "/usr/bin/chromium")
-    service = Service(os.getenv("CHROMEDRIVER_BIN", "/usr/bin/chromedriver"))
-    driver = None
-    try:
-        logging.info(f"Using User-Agent: {ua}")
-        driver = webdriver.Chrome(service=service, options=opts)
-        driver.get(url)
-        time.sleep(3)
-        html = driver.page_source
-        return html
-    finally:
-        if driver:
-            driver.quit()
+    session = requests.Session()
+    user_agents = (
+        [USER_AGENT_ENV] if USER_AGENT_ENV else config.USER_AGENTS
+    )
+    html = fetch_page_with_retry(
+        session=session,
+        url=url,
+        user_agents=user_agents,
+        timeout=30,
+        max_retries=config.MAX_RETRIES,
+        retry_delay_range=(config.RETRY_DELAY_MIN, config.RETRY_DELAY_MAX),
+    )
+    if not html or html == "404_NOT_FOUND":
+        raise RuntimeError(f"Не удалось загрузить {url}")
+    return html
 
 
 def summarize(html: str):

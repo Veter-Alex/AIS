@@ -3,7 +3,6 @@
 
 Назначение:
 - централизованно хранить лимиты, таймауты и задержки антиблокировочной стратегии;
-- держать параметры Selenium и БД в одном месте;
 - упростить переключение между test/full режимами.
 """
 
@@ -36,22 +35,17 @@ REQUEST_DELAY_MAX = 8
 DETAIL_DELAY_MIN = 2
 DETAIL_DELAY_MAX = 4
 
-# Задержка перед повторной попыткой после ошибки (базовое значение для экспоненциального роста)
-RETRY_BASE_DELAY = 5
-
-# Задержка для стабилизации DOM после загрузки (секунды)
-DOM_STABILIZATION_MIN = 0.8
-DOM_STABILIZATION_MAX = 1.6
+# Пауза между повторными HTTP-попытками (common.http.fetch_page_with_retry).
+# Держим мягче, чтобы не "долбить" сайт при временных блокировках.
+RETRY_DELAY_MIN = 12.0
+RETRY_DELAY_MAX = 30.0
 
 # Дополнительная задержка каждые N страниц (эмуляция "отдыха")
-BREAK_AFTER_PAGES = 30
-BREAK_DURATION_MIN = 45
-BREAK_DURATION_MAX = 90
+BREAK_AFTER_PAGES = 10
+BREAK_DURATION_MIN = 90
+BREAK_DURATION_MAX = 180
 
 # === Timeouts ===
-# Таймаут ожидания элементов страницы (секунды)
-WAIT_TIMEOUT = 12
-
 # Таймаут загрузки фотографий (секунды)
 PHOTO_DOWNLOAD_TIMEOUT = 15
 
@@ -62,11 +56,6 @@ USER_AGENTS = [
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.3 Safari/605.1.15",
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:124.0) Gecko/20100101 Firefox/124.0",
 ]
-
-# === Selenium настройки ===
-CHROME_BINARY = "/usr/bin/chromium"
-CHROMEDRIVER_BINARY = "/usr/bin/chromedriver"
-WINDOW_SIZE = "1920,1080"
 
 # === База данных ===
 # Настройки подключения (переопределяются через ENV переменные)

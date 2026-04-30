@@ -141,7 +141,7 @@ def test_vesselfinder_golden(monkeypatch):
     module = _load_scraper("vesselfinder_scraper", "vesselfinder")
     monkeypatch.setattr(
         module,
-        "get_html_with_selenium",
+        "fetch_page",
         lambda *_args, **_kwargs: _read_fixture("vesselfinder_detail.html"),
     )
     monkeypatch.setattr(
@@ -157,7 +157,7 @@ def test_vesselfinder_handles_broken_html(monkeypatch):
     module = _load_scraper("vesselfinder_scraper_broken", "vesselfinder")
     monkeypatch.setattr(
         module,
-        "get_html_with_selenium",
+        "fetch_page",
         lambda *_args, **_kwargs: "<html><body>broken</body></html>",
     )
     monkeypatch.setattr(
@@ -194,7 +194,7 @@ def test_vesselfinder_metric_fallbacks(monkeypatch):
     </body></html>
     """
     monkeypatch.setattr(
-        module, "get_html_with_selenium", lambda *_args, **_kwargs: html
+        module, "fetch_page", lambda *_args, **_kwargs: html
     )
     monkeypatch.setattr(
         module, "download_image", lambda *_args, **_kwargs: None
