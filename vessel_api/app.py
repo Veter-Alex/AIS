@@ -234,6 +234,17 @@ def _scraper_activity(
     return "recent"
 
 
+def _iso_utc(ts: datetime | None) -> str | None:
+    """Сериализовать timestamp в ISO8601 c timezone (+00:00)."""
+    if ts is None:
+        return None
+    if ts.tzinfo is None:
+        ts = ts.replace(tzinfo=timezone.utc)
+    else:
+        ts = ts.astimezone(timezone.utc)
+    return ts.isoformat()
+
+
 def _serialize_scraper_row(
     row: dict, stale_after: timedelta, last_data_at: datetime | None = None
 ) -> dict:
@@ -243,10 +254,8 @@ def _serialize_scraper_row(
         "mode": row["mode"],
         "last_page": int(row["last_page"]),
         "vessels_count": int(row["vessels_count"]),
-        "last_run_at": lr.isoformat() if lr else None,
-        "last_data_at": (
-            last_data_at.isoformat() if last_data_at is not None else None
-        ),
+        "last_run_at": _iso_utc(lr),
+        "last_data_at": _iso_utc(last_data_at),
         "activity": _scraper_activity(lr, stale_after),
     }
 
@@ -295,11 +304,7 @@ def monitor_scrapers() -> dict:
                     "mode": row["mode"],
                     "last_page": row["last_page"],
                     "vessels_count": row["vessels_count"],
-                    "last_run_at": (
-                        row["last_run_at"].isoformat()
-                        if row["last_run_at"]
-                        else None
-                    ),
+                    "last_run_at": _iso_utc(row["last_run_at"]),
                 }
             )
         return {
