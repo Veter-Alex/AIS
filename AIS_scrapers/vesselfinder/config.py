@@ -48,6 +48,9 @@ BREAK_DURATION_MAX = 180
 # === Timeouts ===
 # Таймаут загрузки фотографий (секунды)
 PHOTO_DOWNLOAD_TIMEOUT = 15
+PHOTO_MAX_RETRIES = 4
+PHOTO_RETRY_DELAY_MIN = 1.5
+PHOTO_RETRY_DELAY_MAX = 4.5
 
 # === User Agents ===
 USER_AGENTS = [

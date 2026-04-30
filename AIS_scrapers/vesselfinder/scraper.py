@@ -39,7 +39,7 @@ from common.metrics import RuntimeMetrics
 from common.normalize import parse_int
 from common.schema import validate_scraper_schema
 from common.upsert import source_priority_sql
-from PIL import Image
+from PIL import Image, UnidentifiedImageError
 
 configure_scraper_logging("vesselfinder")
 
@@ -289,32 +289,91 @@ def download_image(photo_url, vessel_key):
     file_name = f"{vessel_key}.jpg"  # Все фото сохраняем как JPEG для сжатия
     dest = os.path.join(image_dir, file_name)
 
-    try:
-        r = requests.get(photo_url, timeout=config.PHOTO_DOWNLOAD_TIMEOUT)
-        if r.status_code == 200:
-            # Открыть изображение в памяти
-            img = Image.open(io.BytesIO(r.content))
+    photo_timeout = float(
+        os.getenv("PHOTO_DOWNLOAD_TIMEOUT", str(config.PHOTO_DOWNLOAD_TIMEOUT))
+    )
+    photo_retries = max(
+        1, int(os.getenv("PHOTO_MAX_RETRIES", str(config.PHOTO_MAX_RETRIES)))
+    )
+    retry_delay_min = float(
+        os.getenv(
+            "PHOTO_RETRY_DELAY_MIN", str(config.PHOTO_RETRY_DELAY_MIN)
+        )
+    )
+    retry_delay_max = float(
+        os.getenv(
+            "PHOTO_RETRY_DELAY_MAX", str(config.PHOTO_RETRY_DELAY_MAX)
+        )
+    )
 
-            # Конвертировать в RGB (для JPEG)
-            if img.mode in ("RGBA", "LA", "P"):
-                rgb_img = Image.new("RGB", img.size, (255, 255, 255))
-                rgb_img.paste(
-                    img, mask=img.split()[-1] if img.mode == "RGBA" else None
+    for attempt in range(1, photo_retries + 1):
+        try:
+            headers = {"User-Agent": get_sticky_user_agent()}
+            response = session.get(
+                photo_url,
+                headers=headers,
+                timeout=photo_timeout,
+                stream=True,
+                allow_redirects=True,
+            )
+            if response.status_code != 200:
+                logging.warning(
+                    "Фото не скачано status=%s url=%s attempt=%s/%s",
+                    response.status_code,
+                    photo_url,
+                    attempt,
+                    photo_retries,
                 )
-                img = rgb_img
+                response.close()
+                if attempt < photo_retries:
+                    time.sleep(random.uniform(retry_delay_min, retry_delay_max))
+                continue
 
-            # Сжать размер (макс 320x240)
-            img.thumbnail((320, 240), Image.Resampling.LANCZOS)
+            raw = response.content
+            response.close()
+            if not raw:
+                if attempt < photo_retries:
+                    time.sleep(random.uniform(retry_delay_min, retry_delay_max))
+                continue
+            sniff = raw.lstrip()[:64].lower()
+            if sniff.startswith(b"<html") or sniff.startswith(b"<?xml"):
+                if attempt < photo_retries:
+                    time.sleep(random.uniform(retry_delay_min, retry_delay_max))
+                continue
 
-            # Сохранить с качеством 65% (экономия ~70% размера)
-            img.save(dest, "JPEG", quality=65, optimize=True)
-            logging.info(f"Фото сохранено: {dest}")
-            return dest
-        logging.warning(f"Фото не скачано status={r.status_code}")
-        return None
-    except Exception as e:
-        logging.warning(f"Ошибка скачивания/сжатия фото: {e}")
-        return None
+            try:
+                img = Image.open(io.BytesIO(raw))
+                if img.mode in ("RGBA", "LA", "P"):
+                    rgb_img = Image.new("RGB", img.size, (255, 255, 255))
+                    rgb_img.paste(
+                        img, mask=img.split()[-1] if img.mode == "RGBA" else None
+                    )
+                    img = rgb_img
+                img.thumbnail((320, 240), Image.Resampling.LANCZOS)
+                img.save(dest, "JPEG", quality=65, optimize=True)
+                logging.info(f"Фото сохранено: {dest}")
+                return dest
+            except UnidentifiedImageError:
+                if raw.startswith(b"RIFF") and raw[8:12] == b"WEBP":
+                    webp_dest = os.path.join(image_dir, f"{vessel_key}.webp")
+                    with open(webp_dest, "wb") as f:
+                        f.write(raw)
+                    logging.info(f"Фото сохранено (WEBP): {webp_dest}")
+                    return webp_dest
+                if attempt < photo_retries:
+                    time.sleep(random.uniform(retry_delay_min, retry_delay_max))
+                    continue
+        except Exception as e:
+            logging.warning(
+                "Ошибка скачивания/сжатия фото (attempt %s/%s): %s",
+                attempt,
+                photo_retries,
+                e,
+            )
+            if attempt < photo_retries:
+                time.sleep(random.uniform(retry_delay_min, retry_delay_max))
+                continue
+    return None
 
 
 def save_to_db(vessel):
@@ -640,7 +699,35 @@ def parse_vessel(url):
     )
 
     img = soup.find("img", class_="main-photo")
-    vessel["photo_url"] = img["src"] if img and img.get("src") else None
+    if not img:
+        img = soup.find(
+            "img",
+            {
+                "src": re.compile(
+                    r"(photos|vessels|ship|cdn|images?)",
+                    re.IGNORECASE,
+                )
+            },
+        )
+    photo_url = None
+    if img:
+        photo_url = (
+            img.get("src")
+            or img.get("data-src")
+            or img.get("data-original")
+        )
+        if not photo_url and img.get("srcset"):
+            photo_url = img.get("srcset").split(",")[0].split()[0]
+    if not photo_url:
+        og_image = soup.find("meta", property="og:image")
+        if og_image:
+            photo_url = og_image.get("content")
+    if photo_url:
+        if photo_url.startswith("//"):
+            photo_url = "https:" + photo_url
+        elif photo_url.startswith("/"):
+            photo_url = "https://www.vesselfinder.com" + photo_url
+    vessel["photo_url"] = photo_url
     vessel_key = vessel.get("imo") or vessel.get("mmsi")
     if vessel["photo_url"] and vessel_key:
         vessel["photo_path"] = download_image(

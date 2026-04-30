@@ -35,6 +35,14 @@ MAX_RETRIES = 5
 RETRY_DELAY_MIN = 5.0
 RETRY_DELAY_MAX = 15.0
 
+# Параметры скачивания фото (отдельно от HTML-запросов).
+# CDN с изображениями обычно отвечает медленнее и нестабильнее,
+# поэтому допускаем больше таймаут и несколько попыток.
+PHOTO_REQUEST_TIMEOUT = 45
+PHOTO_MAX_RETRIES = 4
+PHOTO_RETRY_DELAY_MIN = 1.5
+PHOTO_RETRY_DELAY_MAX = 4.5
+
 # User-Agent ротация
 USER_AGENTS = [
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",

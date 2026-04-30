@@ -33,7 +33,7 @@ from common.logging_utils import log_event
 from common.metrics import RuntimeMetrics
 from common.normalize import parse_int
 from common.schema import validate_scraper_schema
-from PIL import Image
+from PIL import Image, UnidentifiedImageError
 
 configure_scraper_logging("marinetraffic")
 
@@ -171,29 +171,89 @@ def download_image(photo_url, vessel_key):
 
     file_name = f"{vessel_key}.jpg"
     file_path = os.path.join(image_dir, file_name)
+    photo_timeout = float(
+        os.getenv("PHOTO_REQUEST_TIMEOUT", str(config.PHOTO_REQUEST_TIMEOUT))
+    )
+    photo_retries = max(
+        1, int(os.getenv("PHOTO_MAX_RETRIES", str(config.PHOTO_MAX_RETRIES)))
+    )
+    retry_delay_min = float(
+        os.getenv(
+            "PHOTO_RETRY_DELAY_MIN", str(config.PHOTO_RETRY_DELAY_MIN)
+        )
+    )
+    retry_delay_max = float(
+        os.getenv(
+            "PHOTO_RETRY_DELAY_MAX", str(config.PHOTO_RETRY_DELAY_MAX)
+        )
+    )
 
-    try:
-        headers = {"User-Agent": random.choice(config.USER_AGENTS)}
-        response = session.get(photo_url, headers=headers, timeout=30)
-        response.raise_for_status()
+    # Отдельные ретраи именно для фото: HTML-страница и image CDN имеют
+    # разный профиль ошибок, поэтому важно не терять картинку из-за одного
+    # временного таймаута.
+    for attempt in range(1, photo_retries + 1):
+        try:
+            headers = {"User-Agent": random.choice(config.USER_AGENTS)}
+            response = session.get(
+                photo_url,
+                headers=headers,
+                timeout=photo_timeout,
+                stream=True,
+                allow_redirects=True,
+            )
+            if response.status_code != 200:
+                logging.warning(
+                    "Photo status=%s for %s (attempt %s/%s)",
+                    response.status_code,
+                    photo_url,
+                    attempt,
+                    photo_retries,
+                )
+                response.close()
+                if attempt < photo_retries:
+                    time.sleep(random.uniform(retry_delay_min, retry_delay_max))
+                continue
 
-        # Открыть изображение в памяти
-        img = Image.open(io.BytesIO(response.content))
+            raw = response.content
+            response.close()
+            if not raw:
+                if attempt < photo_retries:
+                    time.sleep(random.uniform(retry_delay_min, retry_delay_max))
+                continue
+            sniff = raw.lstrip()[:64].lower()
+            if sniff.startswith(b"<html") or sniff.startswith(b"<?xml"):
+                if attempt < photo_retries:
+                    time.sleep(random.uniform(retry_delay_min, retry_delay_max))
+                continue
 
-        # Конвертация RGBA в RGB для JPEG
-        if img.mode in ("RGBA", "P"):
-            img = img.convert("RGB")
-
-        # Сжатие до 320x240
-        img.thumbnail((320, 240), Image.Resampling.LANCZOS)
-
-        # Сохранить с качеством 65%
-        img.save(file_path, "JPEG", quality=65, optimize=True)
-
-        return file_path
-    except Exception as e:
-        logging.warning(f"Failed to download image from {photo_url}: {e}")
-        return None
+            try:
+                img = Image.open(io.BytesIO(raw))
+                if img.mode in ("RGBA", "P", "LA"):
+                    img = img.convert("RGB")
+                img.thumbnail((320, 240), Image.Resampling.LANCZOS)
+                img.save(file_path, "JPEG", quality=65, optimize=True)
+                return file_path
+            except UnidentifiedImageError:
+                if raw.startswith(b"RIFF") and raw[8:12] == b"WEBP":
+                    webp_path = os.path.join(image_dir, f"{vessel_key}.webp")
+                    with open(webp_path, "wb") as f:
+                        f.write(raw)
+                    return webp_path
+                if attempt < photo_retries:
+                    time.sleep(random.uniform(retry_delay_min, retry_delay_max))
+                    continue
+        except Exception as e:
+            logging.warning(
+                "Failed to download image %s (attempt %s/%s): %s",
+                photo_url,
+                attempt,
+                photo_retries,
+                e,
+            )
+            if attempt < photo_retries:
+                time.sleep(random.uniform(retry_delay_min, retry_delay_max))
+                continue
+    return None
 
 
 def fetch_page(url, metrics=None):
@@ -391,22 +451,45 @@ def parse_vessel_detail_page(html):
                             value, min_value=100, max_value=700000
                         )
 
-        # Попробовать найти фото судна
-        # MarineTraffic может иметь изображение в <img> с определёнными классами
+        # Попробовать найти фото судна.
+        # Верстка MarineTraffic может отдавать картинку:
+        # - в src/data-src/srcset;
+        # - с разными классами;
+        # - в meta og:image.
         photo_img = soup.find(
             "img",
             {"class": re.compile(r"ship.*photo|vessel.*image", re.IGNORECASE)},
         )
         if not photo_img:
-            # Альтернативный поиск: изображение с src содержащим "photos" или "vessels"
+            # Альтернативный поиск: любые <img> с признаками URL фото.
             photo_img = soup.find(
                 "img",
-                {"src": re.compile(r"(photos|vessels|ships)", re.IGNORECASE)},
+                {
+                    "src": re.compile(
+                        r"(photos|vessels|ships|cdn|images?)",
+                        re.IGNORECASE,
+                    )
+                },
             )
 
-        if photo_img and photo_img.get("src"):
-            photo_url = photo_img.get("src")
-            if photo_url and not photo_url.startswith("http"):
+        photo_url = None
+        if photo_img:
+            photo_url = (
+                photo_img.get("src")
+                or photo_img.get("data-src")
+                or photo_img.get("data-original")
+            )
+            if not photo_url and photo_img.get("srcset"):
+                # Берем первый URL из srcset.
+                photo_url = photo_img.get("srcset").split(",")[0].split()[0]
+        if not photo_url:
+            og_image = soup.find("meta", property="og:image")
+            if og_image:
+                photo_url = og_image.get("content")
+        if photo_url:
+            if photo_url.startswith("//"):
+                photo_url = "https:" + photo_url
+            elif photo_url.startswith("/"):
                 photo_url = f"https://www.marinetraffic.org{photo_url}"
             data["photo_url"] = photo_url
 
