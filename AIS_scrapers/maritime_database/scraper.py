@@ -750,13 +750,61 @@ def parse_vessel_detail_page(html, vessel_data):
     if flag:
         vessel_data["flag"] = flag
 
-    # Извлечь URL фото
-    # Maritime Database использует JavaScript для динамической загрузки изображений, поэтому их нет в HTML
-    # Нужно сконструировать URL. Каталог зависит от vessel_id: (id // 1000) + 1
+    # Извлечь URL фото.
+    # 1) Сначала пытаемся найти прямой URL в HTML (src/data-src/скрипты).
+    # 2) Если не нашли — конструируем вероятные пути по vessel_id/mmsi.
+    # Важно: сайт иногда блокирует HEAD, поэтому для проверки используем
+    # fallback на короткий stream GET.
+    def _url_exists(candidate_url: str) -> bool:
+        headers = {"User-Agent": random.choice(config.USER_AGENTS)}
+        try:
+            resp = session.head(
+                candidate_url,
+                headers=headers,
+                timeout=5,
+                allow_redirects=True,
+            )
+            if resp.status_code == 200:
+                return True
+            if resp.status_code in (403, 405, 429):
+                resp = session.get(
+                    candidate_url,
+                    headers=headers,
+                    timeout=8,
+                    stream=True,
+                    allow_redirects=True,
+                )
+                ok = resp.status_code == 200
+                resp.close()
+                return ok
+            return False
+        except Exception:
+            return False
+
     photo_found = False
     current_mmsi = mmsi or vessel_data.get("mmsi")
 
-    if current_mmsi:
+    html_photo_match = re.search(
+        r"(https?://(?:www\.)?maritime-database\.com/upload/vessels_images/[^\s\"'<>]+)",
+        html,
+        re.IGNORECASE,
+    )
+    if not html_photo_match:
+        html_photo_match = re.search(
+            r"(/upload/vessels_images/[^\s\"'<>]+)",
+            html,
+            re.IGNORECASE,
+        )
+    if html_photo_match:
+        direct_url = html_photo_match.group(1)
+        if direct_url.startswith("/"):
+            direct_url = f"https://www.maritime-database.com{direct_url}"
+        if _url_exists(direct_url):
+            vessel_data["photo_url"] = direct_url
+            photo_found = True
+            logging.info(f"Found photo URL from HTML: {direct_url}")
+
+    if current_mmsi and not photo_found:
         mmsi_str = str(current_mmsi)
         directories_to_check = []
 
@@ -766,7 +814,9 @@ def parse_vessel_detail_page(html, vessel_data):
                 # Формула: folder = (vessel_id // 1000) + 1
                 # Пример: 22245 -> 23; 49 -> 1
                 calc_dir = (int(vessel_id) // 1000) + 1
-                directories_to_check.append(calc_dir)
+                directories_to_check.extend(
+                    [max(1, calc_dir - 1), calc_dir, calc_dir + 1]
+                )
             except ValueError:
                 logging.warning(
                     f"Invalid vessel_id for photo calculation: {vessel_id}"
@@ -774,22 +824,24 @@ def parse_vessel_detail_page(html, vessel_data):
 
         # Запасной диапазон, если расчёт не удался (опционально, но безопасно)
         if not directories_to_check:
-            directories_to_check = range(1, 15)
+            directories_to_check = list(range(1, 15))
+
+        # Убираем дубли, сохраняя порядок.
+        directories_to_check = list(dict.fromkeys(directories_to_check))
 
         for directory in directories_to_check:
-            photo_url = f"https://www.maritime-database.com/upload/vessels_images/{directory}/{mmsi_str}.jpg"
-            try:
-                # Проверить существование фото с помощью HEAD-запроса через сессию
-                headers = {"User-Agent": random.choice(config.USER_AGENTS)}
-                response = session.head(photo_url, headers=headers, timeout=5)
-                if response.status_code == 200:
+            for ext in ("jpg", "jpeg", "webp", "png"):
+                photo_url = (
+                    "https://www.maritime-database.com/upload/"
+                    f"vessels_images/{directory}/{mmsi_str}.{ext}"
+                )
+                if _url_exists(photo_url):
                     vessel_data["photo_url"] = photo_url
                     photo_found = True
                     logging.info(f"Found photo URL: {photo_url}")
                     break
-            except Exception as e:
-                logging.debug(f"Error checking photo URL {photo_url}: {e}")
-                continue
+            if photo_found:
+                break
 
     if not photo_found:
         logging.warning(
