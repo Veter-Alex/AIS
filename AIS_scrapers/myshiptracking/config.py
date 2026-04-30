@@ -13,6 +13,9 @@
 # База URL для списка судов
 BASE_URL = "https://www.myshiptracking.com/vessels"
 
+# Имя источника в БД. Должно совпадать с source_priority.source_name.
+DATA_SOURCE = "myshiptracking.com"
+
 # Параметры пагинации
 VESSELS_PER_PAGE = 50  # Используем pp=50 для 50 судов на странице (макс 10,000 за 200 страниц)
 MAX_PAGES = None  # None = без ограничений
